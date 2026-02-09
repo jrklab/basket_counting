@@ -72,14 +72,6 @@ class VL53L1X:
         self._write_register(_VL53L1X_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, b"\x09")
         self._write_register(0x0B, b"\x00")
 
-    # @property
-    # def distance(self):
-    #     """Distance in centimeters."""
-    #     if self._read_register(_VL53L1X_RESULT__RANGE_STATUS)[0] != 0x09:
-    #         return None
-    #     raw = self._read_register(_VL53L1X_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0, 2)
-    #     dist = struct.unpack(">H", raw)[0]
-    #     return dist / 10
     @property
     def distance(self):
         """Distance in centimeters. Returns -1 if out of range or no target."""
@@ -98,7 +90,7 @@ class VL53L1X:
         if dist > 4000:
             return -1
             
-        return dist / 10
+        return dist
 
     def start_ranging(self):
         """Starts ranging operation and ensures interrupts are clean."""
@@ -174,6 +166,13 @@ class VL53L1X:
         # Reg 0x6C is 32-bit (4 bytes) as per your source comments
         val = struct.pack(">I", period_ms)
         self._write_register(0x006C, val)
+
+    def config_sequence(self, distance_mode, timing_budget, measurement_interval_ms):
+        """ simplify the code
+        """
+        self.distance_mode = distance_mode
+        self.timing_budget = timing_budget
+        self.set_inter_measurement_period(measurement_interval_ms)
 
     def _write_register(self, address, data):
         # Standard MicroPython 16-bit register write
