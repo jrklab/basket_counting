@@ -54,7 +54,7 @@ def main():
     # Setup deep sleep wakeup
     print("Configuring deep sleep wakeup on INT pin...")
     int_pin = Pin(MPU6050_INT_PIN, Pin.IN, Pin.PULL_UP)
-    esp32.gpio_deep_sleep_hold(True)
+    # esp32.gpio_deep_sleep_hold(True)
     # machine.Pin(MPU6050_INT_PIN).init(pull=machine.Pin.PULL_UP)
     esp32.wake_on_ext0(pin=int_pin, level=esp32.WAKEUP_ALL_LOW)
     

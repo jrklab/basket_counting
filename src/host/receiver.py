@@ -56,7 +56,7 @@ class SensorGui(tk.Tk):
         self.fig.subplots_adjust(right=0.85)  # Make room for scrollbars
 
         # Acceleration plot
-        self.ax_accel.set_title("Accelerometer Data")
+        self.ax_accel.set_title("Accelerometer Data, Subtracting 1g from Z-axis")
         self.ax_accel.set_ylabel("Acceleration (g)")
         self.accel_lines = {
             'x': self.ax_accel.plot([], [], label='AcX')[0],
@@ -141,9 +141,10 @@ class SensorGui(tk.Tk):
         # Append new data
         self.accel_data['x'].append(accel[0])
         self.accel_data['y'].append(accel[1])
-        self.accel_data['z'].append(accel[2])
-        # Calculate magnitude: sqrt(acx^2 + acy^2 + acz^2)
-        magnitude = (accel[0]**2 + accel[1]**2 + accel[2]**2)**0.5
+        # Remove 1g offset from Z-axis (gravity)
+        self.accel_data['z'].append(accel[2] - 1.0)
+        # Calculate magnitude: sqrt(acx^2 + acy^2 + (acz-1)^2)
+        magnitude = (accel[0]**2 + accel[1]**2 + (accel[2] - 1.0)**2)**0.5
         self.accel_data['magnitude'].append(magnitude)
         
         self.gyro_data['x'].append(gyro[0])
@@ -331,8 +332,12 @@ class DataReceiver:
                 last_distance, _ = tof_data[-1] if tof_data else (0xFFFF, 0)
                 self.gui.after(0, self.gui.update_plots, last_accel, last_gyro, last_distance, packet_timestamp)
 
-            except:
-                # Queue timeout - just continue
+            except Exception as e:
+                # Queue timeout is expected, but print other errors
+                if "Empty" not in str(type(e).__name__):
+                    print(f"❌ Error processing packet: {type(e).__name__}: {e}")
+                    import traceback
+                    traceback.print_exc()
                 continue
 
     def start(self):
