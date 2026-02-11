@@ -1,10 +1,7 @@
 from machine import I2C, Pin
 import adafruit_mp_vl53l1x
 import time
-
-VL53L1X_SCL_PIN = 6
-VL53L1X_SDA_PIN = 7
-VL53L1X_XSHUT_PIN = 8
+from hardware_config import VL53L1X_SCL_PIN, VL53L1X_SDA_PIN, VL53L1X_XSHUT_PIN
 
 i2c = I2C(0, sda=Pin(VL53L1X_SDA_PIN), scl=Pin(VL53L1X_SCL_PIN), freq=400000)
 vl53 = adafruit_mp_vl53l1x.VL53L1X(i2c)

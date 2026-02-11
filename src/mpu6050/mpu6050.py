@@ -10,7 +10,6 @@
 #
 import math
 import time
-from machine import I2C
 
 class MPU6050():
     """
@@ -45,6 +44,32 @@ class MPU6050():
             raise ValueError("Accelerometer range must be 2, 4, 8, or 16")
         self.i2c.writeto_mem(self.addr, 0x1C, bytearray([value]))
 
+    def set_accel_hpf(self, hpf_mode):
+        """
+        Set the accelerometer high pass filter (HPF) mode.
+        :param hpf_mode: HPF mode value
+                         0 (000): Reset mode - Gravity is NOT filtered
+                         1 (001): 5 Hz cutoff - Highest cutoff, filters gravity almost instantly
+                         2 (010): 2.5 Hz cutoff - Slower response to orientation changes
+                         3 (011): 1.25 Hz cutoff - Used for very slow motion detection
+                         4 (100): 0.63 Hz cutoff - Ultra-slow response
+                         7 (111): Hold - Freezes the filter at the current average
+        """
+        # ACCEL_CONFIG register (0x1C)
+        # Read current value to preserve accel range setting
+        current = self.i2c.readfrom_mem(self.addr, 0x1C, 1)[0]
+        
+        # Clear HPF bits (bits 3:1) but preserve accel range (bits 4:3)
+        accel_range_bits = current & 0x18  # Keep bits 4:3 (accel range)
+        
+        if hpf_mode in [0, 1, 2, 3, 4, 7]:
+            # Set HPF bits 2:0 with the provided mode value
+            value = accel_range_bits | (hpf_mode)
+        else:
+            raise ValueError("HPF mode must be 0, 1, 2, 3, 4, or 7")
+        
+        self.i2c.writeto_mem(self.addr, 0x1C, bytearray([value]))
+
     def set_gyro_range(self, gyro_range):
         """
         Set the gyroscope full scale range.
@@ -61,6 +86,49 @@ class MPU6050():
         else:
             raise ValueError("Gyroscope range must be 250, 500, 1000, or 2000")
         self.i2c.writeto_mem(self.addr, 0x1B, bytearray([value]))
+
+    def set_filter_bandwidth(self, bandwidth):
+        """
+        Set the digital low-pass filter (DLPF) bandwidth.
+        :param bandwidth: 0-6, where:
+                         0: 260Hz, 1: 184Hz, 2: 94Hz, 3: 44Hz,
+                         4: 21Hz, 5: 10Hz, 6: 5Hz
+        """
+        if bandwidth < 0 or bandwidth > 6:
+            raise ValueError("Filter bandwidth must be 0-6")
+        self.i2c.writeto_mem(self.addr, 0x1A, bytearray([bandwidth]))
+
+    def setup_motion_detection(self, threshold=15):
+        """
+        Configure MPU6050 motion detection interrupt.
+        
+        :param threshold: Motion threshold in raw units (1 LSB = ~32mg)
+                         threshold=15 ≈ 0.5g, threshold=32 ≈ 1g
+        """
+        # Wake up MPU6050 (clear sleep bit in power management register 0x6B)
+        self.i2c.writeto_mem(self.addr, 0x6B, bytearray([0x00]))
+        time.sleep(0.1)
+                # Configure INT pin: Active-Low, Open-Drain, Latched (register 0x37)
+        # Binary: 1111 0000 -> Hex: 0xF0
+        # Bit 7: ACLK_FSR (1=Active-Low), Bit 6: OPEN (1=Open-Drain)
+        # Bit 5: LATCH_EN (1=Latched), Bit 4: INT_RD_CLEAR (1=Read clears INT)
+        self.i2c.writeto_mem(self.addr, 0x37, bytearray([0xB0]))
+                # Set motion threshold (register 0x1F)
+        self.i2c.writeto_mem(self.addr, 0x1F, bytearray([threshold]))
+        
+        # Set motion duration (register 0x20) - 1 sample = 1ms at 1kHz ODR
+        self.i2c.writeto_mem(self.addr, 0x20, bytearray([0x01]))
+        
+        # Enable motion interrupt (register 0x38, bit 6)
+        self.i2c.writeto_mem(self.addr, 0x38, bytearray([0x40]))
+
+    def clear_motion_interrupt(self):
+        """Clear the latched motion interrupt by reading INT_STATUS register.
+        
+        The INT_STATUS register (0x3A) is read-to-clear, so reading it clears
+        the latched interrupt and allows the INT pin to go back HIGH.
+        """
+        self.i2c.readfrom_mem(self.addr, 0x3A, 1)
 
     def get_raw_values(self):
         """

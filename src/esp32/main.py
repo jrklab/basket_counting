@@ -6,17 +6,16 @@ import struct
 import random
 import gc
 from mpu6050 import MPU6050
-import sys
-sys.path.append('.')
-from adafruit_mp_vl53l1x import VL53L1X
 
-# phone hotspot
-# WIFI_SSID = "Hottnt"
-# WIFI_PASSWORD = "fortestonly"
-# SERVER_IP = "10.98.51.74"
-# home WiFi
-WIFI_SSID = "AttIsBeter"
-WIFI_PASSWORD = "PP123Acalance"
+from adafruit_mp_vl53l1x import VL53L1X
+from hardware_config import (
+    MPU6050_SCL_PIN, MPU6050_SDA_PIN, MPU6050_INT_PIN,
+    VL53L1X_SCL_PIN, VL53L1X_SDA_PIN, VL53L1X_XSHUT_PIN,
+    VL53L1X_DISTANCE_MODE_SHORT, VL53L1X_TIMING_BUDGET_MS, 
+    VL53L1X_MEASUREMENT_INTERVAL_MS, VL53L1X_TIMEOUT_MS
+)
+
+# WiFi configuration is in boot.py
 SERVER_IP = "192.168.1.176"
 SERVER_PORT = 12345
 
@@ -26,22 +25,12 @@ VL53L1X_READ_FREQUENCY_HZ = 40   # VL53L1X read frequency (25ms period, dependin
 UDP_SEND_FREQUENCY_HZ = 10       # UDP packet send frequency (100ms period)
 
 SAMPLES_PER_PACKET_MPU = MPU6050_READ_FREQUENCY_HZ // UDP_SEND_FREQUENCY_HZ  # 20 samples
-SAMPLES_PER_PACKET_TOF = VL53L1X_READ_FREQUENCY_HZ // UDP_SEND_FREQUENCY_HZ  # 4 samples
 
 # Enable/disable fake data for testing
 USE_FAKE_DATA_VL53L1X = False
 USE_FAKE_DATA_MPU6050 = False
 
-MPU6050_SCL_PIN = 4
-MPU6050_SDA_PIN = 5
-VL53L1X_SCL_PIN = 6
-VL53L1X_SDA_PIN = 7
-VL53L1X_XSHUT_PIN = 8
-
-VL53L1X_DISTANCE_MODE_SHORT = 1
-VL53L1X_TIMING_BUDGET_MS = 33
-VL53L1X_MEASUREMENT_INTERVAL_MS = 40 # timeout + some margin for processing
-# MPU6050 connection (I2C0)
+# VL53L1X timeout tracking
 i2c0 = machine.I2C(0, scl=machine.Pin(MPU6050_SCL_PIN), sda=machine.Pin(MPU6050_SDA_PIN), freq=400000)
 devices = i2c0.scan()
 print(f"I2C0 devices found: {[hex(d) for d in devices]}")
@@ -58,6 +47,7 @@ except Exception as e:
 # Set to maximum ranges
 mpu.set_accel_range(16)   # Acceleration range: ±2 ±4 ±8 ±16g
 mpu.set_gyro_range(2000)  # Gyroscopes range: +/- 250 500 1000 2000 degree/sec
+mpu.set_filter_bandwidth(3)  # Digital low-pass filter: 3 = 44Hz bandwidth
 
 # VL53L1X connection (I2C1)
 i2c1 = machine.I2C(1, scl=machine.Pin(VL53L1X_SCL_PIN), sda=machine.Pin(VL53L1X_SDA_PIN), freq=400000)
@@ -79,55 +69,20 @@ tof_last_read_time = time.ticks_ms()
 tof_measurement_period = 1000.0/VL53L1X_READ_FREQUENCY_HZ  # ms (for 40Hz operation)
 
 # VL53L1X timeout tracking
-VL53L1X_TIMEOUT_MS = VL53L1X_MEASUREMENT_INTERVAL_MS  # 500ms timeout for VL53L1X data_ready
 tof_last_data_ready_time = time.ticks_ms()
 
 # Pre-allocate packet buffer (318 bytes) to avoid memory fragmentation
 packet_buffer = bytearray(318)
 
-def connect_wifi():
-    """Connects to the WiFi network with proper state management."""
+def check_wifi():
+    """Check if WiFi is already connected (connection should be done in boot.py)."""
     sta_if = network.WLAN(network.STA_IF)
-    
-    # Properly reset WiFi state to avoid "Internal State Error"
-    print("Resetting WiFi state...")
-    sta_if.active(False)
-    time.sleep_ms(500)  # Wait for state to clear
-    
-    if not sta_if.isconnected():
-        print("Connecting to WiFi...")
-        sta_if.active(True)
-        time.sleep_ms(200)  # Give it time to activate
-        
-        # Attempt connection with retries
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                print(f"Connection attempt {attempt + 1}/{max_retries}...")
-                sta_if.connect(WIFI_SSID, WIFI_PASSWORD)
-                
-                # Wait for connection with timeout
-                timeout = time.time() + 10  # 10 second timeout
-                while not sta_if.isconnected():
-                    if time.time() > timeout:
-                        print(f"Connection timeout on attempt {attempt + 1}")
-                        break
-                    time.sleep_ms(100)
-                
-                if sta_if.isconnected():
-                    break
-            except Exception as e:
-                print(f"Connection error: {e}")
-                if attempt < max_retries - 1:
-                    sta_if.active(False)
-                    time.sleep_ms(500)
-                    sta_if.active(True)
-                    time.sleep_ms(200)
-    
     if sta_if.isconnected():
-        print("✓ WiFi connected:", sta_if.ifconfig())
+        print("✓ WiFi already connected:", sta_if.ifconfig())
+        return True
     else:
-        print("✗ WiFi connection failed!")
+        print("✗ WiFi not connected! Check boot.py configuration.")
+        return False
 
 
 def read_mpu6050_data(timer):
@@ -206,7 +161,7 @@ def read_vl53l1x_data():
                 print(f"VL53L1X timeout after {time_since_last_ready}ms. Initiating hardware reboot...")
                 # Reboot VL53L1X
                 vl53.reboot(xshut_pin_number=VL53L1X_XSHUT_PIN)
-                time.sleep_ms(50)  # Wait for reboot to complete
+                time.sleep_ms(10)  # Reduced from 50ms for faster reboot
                 # Restore configuration
                 vl53.config_sequence(distance_mode=VL53L1X_DISTANCE_MODE_SHORT, 
                                     timing_budget=VL53L1X_TIMING_BUDGET_MS, 
@@ -238,81 +193,79 @@ def pack_and_send_udp_packet(udp_socket):
         mpu_data_to_send = mpu_data_buffer[:SAMPLES_PER_PACKET_MPU]
         tof_data_to_send = list(tof_data_buffer)  # Send all accumulated TOF data
         
-        # Only proceed if we have at least some TOF data
-        if len(tof_data_to_send) > 0:
-            # Remove sent data from buffers
-            del mpu_data_buffer[:SAMPLES_PER_PACKET_MPU]
-            tof_data_buffer.clear()
+        # Remove sent data from buffers
+        del mpu_data_buffer[:SAMPLES_PER_PACKET_MPU]
+        tof_data_buffer.clear()
 
-            # Use pre-allocated buffer and fill it
-            packet_timestamp = time.ticks_ms()
-            
-            # Pack data into pre-allocated buffer
-            offset = 0
-            struct.pack_into('!I', packet_buffer, offset, packet_timestamp)
-            offset += 4
-            
-            # Add MPU sample count
-            num_mpu_samples = len(mpu_data_to_send)
-            struct.pack_into('!B', packet_buffer, offset, num_mpu_samples)
-            offset += 1
-            
-            # Pack MPU6050 data with timestamp deltas
-            for sample in mpu_data_to_send:
+        # Use pre-allocated buffer and fill it
+        packet_timestamp = time.ticks_ms()
+        
+        # Pack data into pre-allocated buffer
+        offset = 0
+        struct.pack_into('!I', packet_buffer, offset, packet_timestamp)
+        offset += 4
+        
+        # Add MPU sample count
+        num_mpu_samples = len(mpu_data_to_send)
+        struct.pack_into('!B', packet_buffer, offset, num_mpu_samples)
+        offset += 1
+        
+        # Pack MPU6050 data with timestamp deltas
+        for sample in mpu_data_to_send:
+            # Calculate timestamp delta (packet_timestamp - sample_timestamp)
+            timestamp_delta = packet_timestamp - sample['timestamp']
+            # Clamp to uint16 range (0-65535)
+            timestamp_delta = max(0, min(65535, timestamp_delta))
+            struct.pack_into('!H', packet_buffer, offset, timestamp_delta)
+            offset += 2
+            struct.pack_into('!hhhhhh', packet_buffer, offset,
+                sample['accel_x'],
+                sample['accel_y'],
+                sample['accel_z'],
+                sample['gyro_x'],
+                sample['gyro_y'],
+                sample['gyro_z']
+            )
+            offset += 12
+        
+        # Add TOF sample count
+        num_tof_samples = min(len(tof_data_to_send), 8)  # Cap at 8 samples
+        struct.pack_into('!B', packet_buffer, offset, num_tof_samples)
+        offset += 1
+        
+        # Pack VL53L1X data with timestamp deltas (fixed 8 slots)
+        for i in range(8):
+            if i < len(tof_data_to_send):
                 # Calculate timestamp delta (packet_timestamp - sample_timestamp)
-                timestamp_delta = packet_timestamp - sample['timestamp']
+                timestamp_delta = packet_timestamp - tof_data_to_send[i]['timestamp']
                 # Clamp to uint16 range (0-65535)
                 timestamp_delta = max(0, min(65535, timestamp_delta))
                 struct.pack_into('!H', packet_buffer, offset, timestamp_delta)
                 offset += 2
-                struct.pack_into('!hhhhhh', packet_buffer, offset,
-                    sample['accel_x'],
-                    sample['accel_y'],
-                    sample['accel_z'],
-                    sample['gyro_x'],
-                    sample['gyro_y'],
-                    sample['gyro_z']
-                )
-                offset += 12
-            
-            # Add TOF sample count
-            num_tof_samples = min(len(tof_data_to_send), 8)  # Cap at 8 samples
-            struct.pack_into('!B', packet_buffer, offset, num_tof_samples)
-            offset += 1
-            
-            # Pack VL53L1X data with timestamp deltas (fixed 8 slots)
-            for i in range(8):
-                if i < len(tof_data_to_send):
-                    # Calculate timestamp delta (packet_timestamp - sample_timestamp)
-                    timestamp_delta = packet_timestamp - tof_data_to_send[i]['timestamp']
-                    # Clamp to uint16 range (0-65535)
-                    timestamp_delta = max(0, min(65535, timestamp_delta))
-                    struct.pack_into('!H', packet_buffer, offset, timestamp_delta)
-                    offset += 2
-                    struct.pack_into('!H', packet_buffer, offset, tof_data_to_send[i]['distance_mm'])
-                    offset += 2
-                else:
-                    # Pad with timestamp_delta=0 and distance=0x0000
-                    struct.pack_into('!I', packet_buffer, offset, 0)
-                    offset += 4
+                struct.pack_into('!H', packet_buffer, offset, tof_data_to_send[i]['distance_mm'])
+                offset += 2
+            else:
+                # Pad with timestamp_delta=0 and distance=0x0000
+                struct.pack_into('!I', packet_buffer, offset, 0)
+                offset += 4
 
-            # Send packet
-            try:
-                udp_socket.sendto(packet_buffer, (SERVER_IP, SERVER_PORT))
-                print(f"[{packet_timestamp:>10}] Sent packet: {num_mpu_samples} MPU + {num_tof_samples} TOF samples (size: 318 bytes)")
-            except Exception as e:
-                print(f"Error sending UDP packet: {e}")
-            
-            # Force garbage collection after send to free memory
-            gc.collect()
-            
-            return True
+        # Send packet
+        try:
+            udp_socket.sendto(packet_buffer, (SERVER_IP, SERVER_PORT))
+            print(f"[{packet_timestamp:>10}] Sent packet: {num_mpu_samples} MPU + {num_tof_samples} TOF samples (size: 318 bytes)")
+        except Exception as e:
+            print(f"Error sending UDP packet: {e}")
+        
+        # Force garbage collection after send to free memory
+        gc.collect()
+        
+        return True
     return False
 
 
 def main():
     """Main function."""
-    connect_wifi()
+    check_wifi()  # Just verify WiFi is connected (connection done in boot.py)
 
     # Setup UDP socket
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -324,25 +277,19 @@ def main():
     print("Starting data acquisition and transmission...")
     print(f"MPU6050: 200 Hz (5ms period)")
     print(f"VL53L1X: ~40 Hz (25ms period)")
-    print(f"UDP transmission: 10 Hz (100ms period)")
+    print(f"UDP transmission: Data-driven (when MPU buffer has {SAMPLES_PER_PACKET_MPU} samples)")
     print(f"Fake VL53L1X data: {USE_FAKE_DATA_VL53L1X}")
-
-    last_send_time = time.ticks_ms()
-    send_interval = 1000 // UDP_SEND_FREQUENCY_HZ  # 100ms for 10Hz
 
     try:
         while True:
             # Non-blocking read of VL53L1X data
             read_vl53l1x_data()
             
-            # Check if it's time to send a packet (10Hz = 100ms interval)
-            current_time = time.ticks_ms()
-            if time.ticks_diff(current_time, last_send_time) >= send_interval:
-                if pack_and_send_udp_packet(udp_socket):
-                    last_send_time = current_time
+            # Send UDP packet when MPU6050 buffer has enough samples
+            pack_and_send_udp_packet(udp_socket)
             
-            # Small sleep to prevent blocking (1ms)
-            time.sleep_ms(1)
+            # Small sleep to prevent blocking (5ms)
+            time.sleep_ms(5)
             
     except KeyboardInterrupt:
         print("Stopping data acquisition...")

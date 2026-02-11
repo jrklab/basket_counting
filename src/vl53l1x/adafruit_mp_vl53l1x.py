@@ -182,17 +182,17 @@ class VL53L1X:
         # Standard MicroPython 16-bit register read
         return self._i2c.readfrom_mem(self._address, address, length, addrsize=16)
     
-    def reboot(self, xshut_pin_number=8):
+    def reboot(self, xshut_pin_number):
         """Performs a full hardware reboot of the sensor using XSHUT."""
         xshut = Pin(xshut_pin_number, Pin.OUT)
         
         # 1. Pull XSHUT low to power down the sensor logic
         xshut.value(0)
-        time.sleep_ms(150) # 100ms is plenty for a full discharge
+        time.sleep_ms(50) # Reduced from 150ms for faster reboot
         
         # 2. Release XSHUT
         xshut.value(1)
-        time.sleep_ms(150) # Wait for the sensor internal bootloader
+        time.sleep_ms(100) # Reduced from 150ms - wait for the sensor internal bootloader
         
         # 3. Re-run the essential initialization sequence
         self._sensor_init()
