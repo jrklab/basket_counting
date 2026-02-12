@@ -75,13 +75,11 @@ class VL53L1X:
     @property
     def distance(self):
         """Distance in centimeters. Returns -1 if out of range or no target."""
-        # Check range status
+        # Check range status - only accept 0x00 (hardware ok)
         status = self._read_register(_VL53L1X_RESULT__RANGE_STATUS)[0]
         
-        # Status 0x09 is valid, but we should also check for other 
-        # usable statuses if we want to avoid hanging.
-        if status not in (0x09, 0x00): 
-            return -1 # Indicate no valid target
+        if status != 0x00:
+            return -1  # Indicate invalid measurement
             
         raw = self._read_register(_VL53L1X_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0, 2)
         dist = struct.unpack(">H", raw)[0]

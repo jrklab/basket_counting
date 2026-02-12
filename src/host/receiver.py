@@ -32,7 +32,8 @@ class SensorGui(tk.Tk):
         self.geometry("1200x700")
 
         # Data buffers for plotting
-        self.timestamps = deque(maxlen=PLOT_HISTORY_SIZE)
+        self.timestamps = deque(maxlen=PLOT_HISTORY_SIZE)  # For MPU data
+        self.range_timestamps = deque(maxlen=PLOT_HISTORY_SIZE)  # For TOF data
         self.accel_data = {
             'x': deque(maxlen=PLOT_HISTORY_SIZE),
             'y': deque(maxlen=PLOT_HISTORY_SIZE),
@@ -210,6 +211,7 @@ class SensorGui(tk.Tk):
         # Only clear plot data if this is initial play (not resuming from pause)
         if not self.playback_paused:
             self.timestamps.clear()
+            self.range_timestamps.clear()
             for key in self.accel_data:
                 self.accel_data[key].clear()
             for key in self.gyro_data:
@@ -243,8 +245,6 @@ class SensorGui(tk.Tk):
         total_pause_duration = 0  # Track cumulative pause time
         last_pause_time = 0
         
-        samples_in_group = 0
-        
         while self.playback_running and self.playback_index < len(self.playback_data):
             # Check if paused
             if self.playback_paused:
@@ -268,14 +268,9 @@ class SensorGui(tk.Tk):
             if wait_time > 0:
                 time.sleep(wait_time)
             
-            samples_in_group += 1
-            
-            # Update GUI only every SAMPLES_PER_PACKET samples (like live recording)
-            # This keeps the playback visualization similar to live recording
-            if samples_in_group >= SAMPLES_PER_PACKET:
-                self.after(0, self.update_plots, sample['accel'], sample['gyro'], 
-                          sample['distance'], sample['mpu_ts'])
-                samples_in_group = 0
+            # Update GUI for each sample (same as live mode)
+            self.after(0, self.update_plots, sample['accel'], sample['gyro'], 
+                      sample['distance'], sample['mpu_ts'], sample['tof_ts'])
             
             self.playback_index += 1
         
@@ -314,6 +309,7 @@ class SensorGui(tk.Tk):
         
         # Clear plot data
         self.timestamps.clear()
+        self.range_timestamps.clear()
         for key in self.accel_data:
             self.accel_data[key].clear()
         for key in self.gyro_data:
@@ -341,6 +337,7 @@ class SensorGui(tk.Tk):
         
         # Clear plot data
         self.timestamps.clear()
+        self.range_timestamps.clear()
         for key in self.accel_data:
             self.accel_data[key].clear()
         for key in self.gyro_data:
@@ -395,9 +392,10 @@ class SensorGui(tk.Tk):
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=1)
 
-    def update_plots(self, accel, gyro, distance, timestamp):
+    def update_plots(self, accel, gyro, distance, timestamp, tof_timestamp=None):
         """Updates the plots with new data."""
-        self.timestamps.append(timestamp / 1000.0) # convert to seconds
+        timestamp_sec = timestamp / 1000.0  # convert to seconds
+        self.timestamps.append(timestamp_sec)
         
         # Append new data
         self.accel_data['x'].append(accel[0])
@@ -412,19 +410,24 @@ class SensorGui(tk.Tk):
         self.gyro_data['y'].append(gyro[1])
         self.gyro_data['z'].append(gyro[2])
         
-        # Convert 0xFFFF (65535) to -1 for invalid/no target
-        if distance == 0xFFFF or distance == 65535:
-            display_distance = -1
-        else:
-            display_distance = distance
-        self.range_data.append(display_distance)
+        # Only plot valid TOF data, skip dummy (0xFFFE) and invalid (0xFFFF) data
+        if distance != 0xFFFE and distance != 65534:
+            # Valid TOF data - append it
+            if tof_timestamp is not None:
+                self.range_timestamps.append(tof_timestamp / 1000.0)
+            else:
+                self.range_timestamps.append(timestamp_sec)
+            if distance == 0xFFFF or distance == 65535:
+                self.range_data.append(-1)
+            else:
+                self.range_data.append(distance)
 
         # Trim old data: keep only the last 5 seconds
         if len(self.timestamps) > 0:
             current_time = self.timestamps[-1]
             min_time = current_time - PLOT_DISPLAY_WINDOW
             
-            # Remove data older than 5 seconds
+            # Remove MPU data older than 5 seconds
             while len(self.timestamps) > 0 and self.timestamps[0] < min_time:
                 self.timestamps.popleft()
                 self.accel_data['x'].popleft()
@@ -434,6 +437,13 @@ class SensorGui(tk.Tk):
                 self.gyro_data['x'].popleft()
                 self.gyro_data['y'].popleft()
                 self.gyro_data['z'].popleft()
+        
+        # Remove TOF data older than 5 seconds
+        if len(self.range_timestamps) > 0:
+            current_range_time = self.range_timestamps[-1]
+            min_range_time = current_range_time - PLOT_DISPLAY_WINDOW
+            while len(self.range_timestamps) > 0 and self.range_timestamps[0] < min_range_time:
+                self.range_timestamps.popleft()
                 self.range_data.popleft()
 
         # Throttle plot redraws to reduce CPU usage and prevent slowdown
@@ -447,7 +457,7 @@ class SensorGui(tk.Tk):
             for axis in ['x', 'y', 'z']:
                 self.gyro_lines[axis].set_data(self.timestamps, self.gyro_data[axis])
             
-            self.range_line.set_data(self.timestamps, self.range_data)
+            self.range_line.set_data(self.range_timestamps, self.range_data)
 
             # Rescale axes
             self.ax_accel.relim()
@@ -616,12 +626,16 @@ class DataReceiver:
                 print(f"Received packet: {num_mpu_samples} MPU samples, {num_tof_samples} TOF samples")
                 print(f">>> TOF Range values (mm): {[d for d, _ in tof_data]}")
                 
-                # Update GUI with last sample (thread-safe via after())
+                # Update GUI with all MPU samples paired with TOF data where available (thread-safe via after())
                 # Skip updates if playback is active
                 if not self.gui.playback_mode:
-                    last_accel, last_gyro, _ = mpu_sensor_data[-1]
-                    last_distance, _ = tof_data[-1] if tof_data else (0xFFFF, 0)
-                    self.gui.after(0, self.gui.update_plots, last_accel, last_gyro, last_distance, packet_timestamp)
+                    for i, (accel, gyro, mpu_ts) in enumerate(mpu_sensor_data):
+                        if i < len(tof_data):
+                            distance, tof_ts = tof_data[i]
+                        else:
+                            distance = 0xFFFE
+                            tof_ts = None
+                        self.gui.after(0, self.gui.update_plots, accel, gyro, distance, mpu_ts, tof_ts)
 
             except Exception as e:
                 # Queue timeout is expected, but print other errors
