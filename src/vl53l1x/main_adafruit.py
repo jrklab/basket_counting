@@ -28,15 +28,17 @@ try:
             time.sleep_ms(1)
 
         if ready:
-            dist = vl53.distance
+            measurement = vl53.get_measurement()
             current_time = time.ticks_ms()
             dt = time.ticks_diff(current_time, last_time)
             
-            if dist != -1:
-                freq = 1000 / dt if dt > 0 else 0
-                print(f"Dist: {dist:>5.1f} mm | Time Stamp: {current_time:>10} ms | Freq: {freq:>4.1f} Hz")
+            # Only report valid data when range_status is 0 or 9
+            freq = 1000 / dt if dt > 0 else 0
+            if measurement['range_status'] in (0, 9):
+                print(f"Dist: {measurement['range']:>5} mm | Signal: {measurement['signal_rate']:>5} | Ambient: {measurement['ambient_rate']:>5} | SPAD: {measurement['spad_count']:>5} | Status: {measurement['range_status']:>2} | Freq: {freq:>4.1f} Hz")
             else:
-                print("Out of Range / No Target")
+                print(f"Invalid measurement - Range Status: {measurement['range_status']} (expected 0 or 9)")
+                print(f"Dist: {measurement['range']:>5} mm | Signal: {measurement['signal_rate']:>5} | Ambient: {measurement['ambient_rate']:>5} | SPAD: {measurement['spad_count']:>5} | Status: {measurement['range_status']:>2} | Freq: {freq:>4.1f} Hz")
             
             vl53.clear_interrupt()
             last_time = current_time

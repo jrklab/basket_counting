@@ -139,18 +139,18 @@ def read_vl53l1x_data():
             # Reset timeout counter when data is ready
             tof_last_data_ready_time = current_time
             
-            distance_mm = vl53.distance
-            # distance property returns cm, multiply by 10 for mm
-            # -1 indicates no target
-            if distance_mm >= 0:
+            measurement = vl53.get_measurement()
+            # Only accept data when range_status is 0 or 9 (valid returns)
+            if measurement['range_status'] in (0, 9):
+                distance_mm = measurement['range']
                 tof_data_buffer.append({
                     'distance_mm': int(distance_mm),
                     'timestamp': current_time
                 })
             else:
-                # Invalid reading, still append to maintain synchronization
+                # Invalid range status, append sentinel value
                 tof_data_buffer.append({
-                    'distance_mm': 0xFFFF,  # Sentinel for invalid
+                    'distance_mm': 0xFFFF,  # Dummy data for invalid status
                     'timestamp': current_time
                 })
             vl53.clear_interrupt()

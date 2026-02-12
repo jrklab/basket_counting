@@ -18,6 +18,9 @@ _SD_CONFIG__INITIAL_PHASE_SD0 = const(0x007A)
 _SYSTEM__INTERRUPT_CLEAR = const(0x0086)
 _SYSTEM__MODE_START = const(0x0087)
 _VL53L1X_RESULT__RANGE_STATUS = const(0x0089)
+_VL53L1X_RESULT__DSS_ACTUAL_EFFECTIVE_SPADS_SD0 = const(0x008C)
+_VL53L1X_RESULT__PEAK_SIGNAL_RETURN_RATE_MCPS_SD0 = const(0x0098)
+_VL53L1X_RESULT__AMBIENT_RATE_MCPS_SD0 = const(0x009A)
 _VL53L1X_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0 = const(0x0096)
 _VL53L1X_IDENTIFICATION__MODEL_ID = const(0x010F)
 
@@ -89,6 +92,43 @@ class VL53L1X:
             return -1
             
         return dist
+
+    def get_measurement(self):
+        """Read all measurement data from the sensor.
+        
+        Returns a dictionary containing:
+        - range: Distance in mm
+        - signal_rate: Signal return rate in counts/MCPS
+        - ambient_rate: Ambient rate in counts/MCPS
+        - spad_count: Effective SPAD return count
+        - range_status: Raw range status value
+        """
+        # Read range status
+        range_status = self._read_register(_VL53L1X_RESULT__RANGE_STATUS)[0]
+        
+        # Read range (distance)
+        raw_range = self._read_register(_VL53L1X_RESULT__FINAL_CROSSTALK_CORRECTED_RANGE_MM_SD0, 2)
+        distance = struct.unpack(">H", raw_range)[0]
+        
+        # Read signal rate (peak signal return rate)
+        raw_signal = self._read_register(_VL53L1X_RESULT__PEAK_SIGNAL_RETURN_RATE_MCPS_SD0, 2)
+        signal_rate = struct.unpack(">H", raw_signal)[0]
+        
+        # Read ambient rate
+        raw_ambient = self._read_register(_VL53L1X_RESULT__AMBIENT_RATE_MCPS_SD0, 2)
+        ambient_rate = struct.unpack(">H", raw_ambient)[0]
+        
+        # Read effective SPAD return count
+        raw_spad = self._read_register(_VL53L1X_RESULT__DSS_ACTUAL_EFFECTIVE_SPADS_SD0, 2)
+        spad_count = struct.unpack(">H", raw_spad)[0]
+        
+        return {
+            'range': distance,
+            'signal_rate': signal_rate,
+            'ambient_rate': ambient_rate,
+            'spad_count': spad_count,
+            'range_status': range_status
+        }
 
     def start_ranging(self):
         """Starts ranging operation and ensures interrupts are clean."""
