@@ -71,8 +71,8 @@ tof_measurement_period = 1000.0/VL53L1X_READ_FREQUENCY_HZ  # ms (for 40Hz operat
 # VL53L1X timeout tracking
 tof_last_data_ready_time = time.ticks_ms()
 
-# Pre-allocate packet buffer (318 bytes) to avoid memory fragmentation
-packet_buffer = bytearray(318)
+# Pre-allocate packet buffer (334 bytes) to avoid memory fragmentation
+packet_buffer = bytearray(334)
 
 def check_wifi():
     """Check if WiFi is already connected (connection should be done in boot.py)."""
@@ -125,8 +125,10 @@ def read_vl53l1x_data():
         if time_since_last >= tof_measurement_period:
             # Generate realistic fake data
             fake_distance = random.randint(100, 400)
+            fake_signal_rate = random.randint(100, 500)  # Fake signal rate
             tof_data_buffer.append({
                 'distance_mm': fake_distance,
+                'signal_rate': fake_signal_rate,
                 'timestamp': current_time
             })
             tof_last_read_time = current_time
@@ -143,14 +145,18 @@ def read_vl53l1x_data():
             # Only accept data when range_status is 0 or 9 (valid returns)
             if measurement['range_status'] in (0, 9):
                 distance_mm = measurement['range']
+                signal_rate = measurement.get('signal_rate', 0)  # Get signal rate, default to 0 if not available
                 tof_data_buffer.append({
                     'distance_mm': int(distance_mm),
+                    'signal_rate': int(signal_rate),
                     'timestamp': current_time
                 })
             else:
                 # Invalid range status, append sentinel value
+                signal_rate = measurement.get('signal_rate', 0)  # Get signal rate, default to 0 if not available
                 tof_data_buffer.append({
                     'distance_mm': 0xFFFF,  # Dummy data for invalid status
+                    'signal_rate': int(signal_rate),
                     'timestamp': current_time
                 })
             vl53.clear_interrupt()
@@ -183,10 +189,10 @@ def pack_and_send_udp_packet(udp_socket):
       - 20 slots × 14 bytes = 280 bytes
     - Number of TOF samples (1 byte, uint8) - up to 8
     - TOF samples (8 slots):
-      - Sample timestamp delta (2 bytes, uint16) + distance_mm (uint16 = 2 bytes) = 4 bytes per slot
-      - 8 slots × 4 bytes = 32 bytes, unfilled slots have timestamp_delta=0 and distance=0
+      - Sample timestamp delta (2 bytes, uint16) + distance_mm (uint16 = 2 bytes) + signal_rate (uint16 = 2 bytes) = 6 bytes per slot
+      - 8 slots × 6 bytes = 48 bytes, unfilled slots have timestamp_delta=0 and distance=0 and signal_rate=0
     
-    Total packet size: 4 + 1 + 280 + 1 + 32 = 318 bytes (fixed)
+    Total packet size: 4 + 1 + 280 + 1 + 48 = 334 bytes (fixed)
     """
     if len(mpu_data_buffer) >= SAMPLES_PER_PACKET_MPU:
         # Extract all available TOF data
@@ -244,15 +250,17 @@ def pack_and_send_udp_packet(udp_socket):
                 offset += 2
                 struct.pack_into('!H', packet_buffer, offset, tof_data_to_send[i]['distance_mm'])
                 offset += 2
+                struct.pack_into('!H', packet_buffer, offset, tof_data_to_send[i]['signal_rate'])
+                offset += 2
             else:
-                # Pad with timestamp_delta=0 and distance=0x0000
-                struct.pack_into('!I', packet_buffer, offset, 0)
-                offset += 4
+                # Pad with timestamp_delta=0, distance=0x0000, and signal_rate=0x0000
+                struct.pack_into('!HHH', packet_buffer, offset, 0, 0, 0)
+                offset += 6
 
         # Send packet
         try:
             udp_socket.sendto(packet_buffer, (SERVER_IP, SERVER_PORT))
-            print(f"[{packet_timestamp:>10}] Sent packet: {num_mpu_samples} MPU + {num_tof_samples} TOF samples (size: 318 bytes)")
+            print(f"[{packet_timestamp:>10}] Sent packet: {num_mpu_samples} MPU + {num_tof_samples} TOF samples (size: 334 bytes)")
         except Exception as e:
             print(f"Error sending UDP packet: {e}")
         
