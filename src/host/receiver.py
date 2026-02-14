@@ -174,9 +174,7 @@ class SensorGui(tk.Tk):
                                 signal_rate = int(row[9]) if len(row) > 9 else 0
                                 
                                 # Handle TOF data validation
-                                # 0xFFFE (65534) = dummy data, skip it
-                                if distance == 0xFFFE or distance == 65534:
-                                    continue
+                                # 0xFFFE (65534) = dummy data, keep as-is
                                 # 0xFFFF (65535) = invalid return, set to -1
                                 if distance == 0xFFFF or distance == 65535:
                                     distance = -1
@@ -241,43 +239,26 @@ class SensorGui(tk.Tk):
         print("Playback started/resumed.")
 
     def _playback_worker(self):
-        """Worker thread for playback."""
+        """Worker thread for playback. Reads 20 samples at a time like UDP packets."""
         if self.playback_index >= len(self.playback_data):
             self.playback_index = 0
-        
-        start_time = time.time()
-        start_sample_time = self.playback_data[self.playback_index]['mpu_ts']
-        total_pause_duration = 0  # Track cumulative pause time
-        last_pause_time = 0
         
         while self.playback_running and self.playback_index < len(self.playback_data):
             # Check if paused
             if self.playback_paused:
-                if last_pause_time == 0:
-                    last_pause_time = time.time()
                 time.sleep(0.05)
                 continue
-            else:
-                # If we just resumed from a pause, add the pause duration to total_pause_duration
-                if last_pause_time > 0:
-                    pause_duration = time.time() - last_pause_time
-                    total_pause_duration += pause_duration
-                    last_pause_time = 0
             
-            sample = self.playback_data[self.playback_index]
-            elapsed_time = time.time() - start_time - total_pause_duration
-            sample_elapsed_time = (sample['mpu_ts'] - start_sample_time) / 1000.0
+            # Accumulate 20 samples and process as a batch
+            batch_end = min(self.playback_index + SAMPLES_PER_PACKET, len(self.playback_data))
+            batch = self.playback_data[self.playback_index:batch_end]
             
-            # Wait until it's time to show this sample
-            wait_time = sample_elapsed_time - elapsed_time
-            if wait_time > 0:
-                time.sleep(wait_time)
+            # Update GUI with entire batch at once
+            self.after(0, self.update_plots, batch)
             
-            # Update GUI for each sample (same as live mode)
-            self.after(0, self.update_plots, sample['accel'], sample['gyro'], 
-                      sample['distance'], sample['mpu_ts'], sample['tof_ts'], sample['signal_rate'])
-            
-            self.playback_index += 1
+            self.playback_index = batch_end
+            # Delay 100ms between batches to match plot redraw interval
+            time.sleep(0.1)
         
         # Playback finished
         if self.playback_running:
@@ -365,10 +346,10 @@ class SensorGui(tk.Tk):
         self.ax_accel.set_title("Accelerometer Data, Subtracting 1g from Z-axis")
         self.ax_accel.set_ylabel("Acceleration (g)")
         self.accel_lines = {
-            'x': self.ax_accel.plot([], [], label='AcX')[0],
-            'y': self.ax_accel.plot([], [], label='AcY')[0],
-            'z': self.ax_accel.plot([], [], label='AcZ')[0],
-            'magnitude': self.ax_accel.plot([], [], label='Magnitude')[0]
+            'x': self.ax_accel.plot([], [], marker='.', label='AcX')[0],
+            'y': self.ax_accel.plot([], [], marker='.', label='AcY')[0],
+            'z': self.ax_accel.plot([], [], marker='.', label='AcZ')[0],
+            'magnitude': self.ax_accel.plot([], [], marker='.', label='Magnitude')[0]
         }
         self.ax_accel.legend(loc='upper left')
         self.ax_accel.grid(True)
@@ -377,9 +358,9 @@ class SensorGui(tk.Tk):
         self.ax_gyro.set_title("Gyroscope Data")
         self.ax_gyro.set_ylabel("Angular Velocity (°/s)")
         self.gyro_lines = {
-            'x': self.ax_gyro.plot([], [], label='GyX')[0],
-            'y': self.ax_gyro.plot([], [], label='GyY')[0],
-            'z': self.ax_gyro.plot([], [], label='GyZ')[0]
+            'x': self.ax_gyro.plot([], [], marker='.', label='GyX')[0],
+            'y': self.ax_gyro.plot([], [], marker='.', label='GyY')[0],
+            'z': self.ax_gyro.plot([], [], marker='.', label='GyZ')[0]
         }
         self.ax_gyro.legend(loc='upper left')
         self.ax_gyro.grid(True)
@@ -387,7 +368,7 @@ class SensorGui(tk.Tk):
         # Range plot
         self.ax_range.set_title("Distance (VL53L1X, -1 = no target)")
         self.ax_range.set_ylabel("Distance (mm)")
-        self.range_line = self.ax_range.plot([], [], label='Range')[0]
+        self.range_line = self.ax_range.plot([], [], marker='.', label='Range')[0]
         self.ax_range.legend(loc='upper left')
         self.ax_range.grid(True)
 
@@ -395,7 +376,7 @@ class SensorGui(tk.Tk):
         self.ax_signal_rate.set_title("Signal Rate (VL53L1X)")
         self.ax_signal_rate.set_xlabel("Time (s)")
         self.ax_signal_rate.set_ylabel("Signal Rate")
-        self.signal_rate_line = self.ax_signal_rate.plot([], [], label='Signal Rate')[0]
+        self.signal_rate_line = self.ax_signal_rate.plot([], [], marker='.', label='Signal Rate')[0]
         self.ax_signal_rate.legend(loc='upper left')
         self.ax_signal_rate.grid(True)
 
@@ -406,48 +387,56 @@ class SensorGui(tk.Tk):
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=1)
 
-    def update_plots(self, accel, gyro, distance, timestamp, tof_timestamp=None, signal_rate=None):
-        """Updates the plots with new data."""
-        timestamp_sec = timestamp / 1000.0  # convert to seconds
-        self.timestamps.append(timestamp_sec)
+    def update_plots(self, samples):
+        """Updates plots with a batch of samples (same for live and playback modes).
         
-        # Append new data
-        self.accel_data['x'].append(accel[0])
-        self.accel_data['y'].append(accel[1])
-        # Remove 1g offset from Z-axis (gravity)
-        self.accel_data['z'].append(accel[2] - 1.0)
-        # Calculate magnitude: sqrt(acx^2 + acy^2 + (acz-1)^2)
-        magnitude = (accel[0]**2 + accel[1]**2 + (accel[2] - 1.0)**2)**0.5
-        self.accel_data['magnitude'].append(magnitude)
-        
-        self.gyro_data['x'].append(gyro[0])
-        self.gyro_data['y'].append(gyro[1])
-        self.gyro_data['z'].append(gyro[2])
-        
-        # Only plot valid TOF data, skip dummy (0xFFFE) and invalid (0xFFFF) data
-        if distance != 0xFFFE and distance != 65534:
-            # Valid TOF data - append it
-            if tof_timestamp is not None:
-                self.range_timestamps.append(tof_timestamp / 1000.0)
-            else:
-                self.range_timestamps.append(timestamp_sec)
-            if distance == 0xFFFF or distance == 65535:
-                self.range_data.append(-1)
-            else:
-                self.range_data.append(distance)
+        Args:
+            samples: List of dicts with 'accel', 'gyro', 'distance', 'mpu_ts', 'tof_ts', 'signal_rate'
+        """
+        # Add all samples to buffers
+        for sample in samples:
+            timestamp = sample['mpu_ts']
+            accel = sample['accel']
+            gyro = sample['gyro']
+            distance = sample['distance']
+            tof_timestamp = sample['tof_ts']
+            signal_rate = sample['signal_rate']
             
-            # Append signal rate if provided
-            if signal_rate is not None:
-                self.signal_rate_data.append(signal_rate)
-            else:
-                self.signal_rate_data.append(0)
-
+            timestamp_sec = timestamp / 1000.0
+            self.timestamps.append(timestamp_sec)
+            
+            # Append new data
+            self.accel_data['x'].append(accel[0])
+            self.accel_data['y'].append(accel[1])
+            self.accel_data['z'].append(accel[2] - 1.0)
+            magnitude = (accel[0]**2 + accel[1]**2 + (accel[2] - 1.0)**2)**0.5
+            self.accel_data['magnitude'].append(magnitude)
+            
+            self.gyro_data['x'].append(gyro[0])
+            self.gyro_data['y'].append(gyro[1])
+            self.gyro_data['z'].append(gyro[2])
+            
+            # Only plot valid TOF data
+            if distance != 0xFFFE and distance != 65534:
+                if tof_timestamp is not None:
+                    self.range_timestamps.append(tof_timestamp / 1000.0)
+                else:
+                    self.range_timestamps.append(timestamp_sec)
+                if distance == 0xFFFF or distance == 65535:
+                    self.range_data.append(-1)
+                else:
+                    self.range_data.append(distance)
+                
+                if signal_rate is not None:
+                    self.signal_rate_data.append(signal_rate)
+                else:
+                    self.signal_rate_data.append(0)
+        
         # Trim old data: keep only the last 5 seconds
         if len(self.timestamps) > 0:
             current_time = self.timestamps[-1]
             min_time = current_time - PLOT_DISPLAY_WINDOW
             
-            # Remove MPU data older than 5 seconds
             while len(self.timestamps) > 0 and self.timestamps[0] < min_time:
                 self.timestamps.popleft()
                 self.accel_data['x'].popleft()
@@ -458,7 +447,6 @@ class SensorGui(tk.Tk):
                 self.gyro_data['y'].popleft()
                 self.gyro_data['z'].popleft()
         
-        # Remove TOF data older than 5 seconds
         if len(self.range_timestamps) > 0:
             current_range_time = self.range_timestamps[-1]
             min_range_time = current_range_time - PLOT_DISPLAY_WINDOW
@@ -466,33 +454,46 @@ class SensorGui(tk.Tk):
                 self.range_timestamps.popleft()
                 self.range_data.popleft()
                 self.signal_rate_data.popleft()
-
-        # Throttle plot redraws to reduce CPU usage and prevent slowdown
-        current_time = time.time()
-        if current_time - self.last_plot_update_time >= self.min_plot_update_interval:
-            self.last_plot_update_time = current_time
-            
-            # Update plot data
-            for axis in ['x', 'y', 'z', 'magnitude']:
-                self.accel_lines[axis].set_data(self.timestamps, self.accel_data[axis])
-            for axis in ['x', 'y', 'z']:
-                self.gyro_lines[axis].set_data(self.timestamps, self.gyro_data[axis])
-            
-            self.range_line.set_data(self.range_timestamps, self.range_data)
-            self.signal_rate_line.set_data(self.range_timestamps, self.signal_rate_data)
-
-            # Rescale axes
-            self.ax_accel.relim()
-            self.ax_accel.autoscale_view()
-            self.ax_gyro.relim()
-            self.ax_gyro.autoscale_view()
-            self.ax_range.relim()
-            self.ax_range.autoscale_view()
-            self.ax_signal_rate.relim()
-            self.ax_signal_rate.autoscale_view()
-
-            # Use draw_idle() instead of draw() to avoid blocking
-            self.canvas.draw_idle()
+        
+        # Update plot once for the entire batch
+        for axis in ['x', 'y', 'z', 'magnitude']:
+            self.accel_lines[axis].set_data(self.timestamps, self.accel_data[axis])
+        for axis in ['x', 'y', 'z']:
+            self.gyro_lines[axis].set_data(self.timestamps, self.gyro_data[axis])
+        
+        self.range_line.set_data(self.range_timestamps, self.range_data)
+        self.signal_rate_line.set_data(self.range_timestamps, self.signal_rate_data)
+        
+        # Determine the time range based on MPU data (which is trimmed to 5 seconds)
+        # This ensures all plots display the same time window
+        if len(self.timestamps) > 0:
+            time_min = self.timestamps[0]
+            time_max = self.timestamps[-1]
+            # Add 5% padding to both sides
+            time_range = time_max - time_min if time_max > time_min else 1
+            time_min -= time_range * 0.05
+            time_max += time_range * 0.05
+        else:
+            time_min, time_max = 0, 1
+        
+        # Rescale axes with synchronized x-limits
+        self.ax_accel.relim()
+        self.ax_accel.autoscale_view()
+        self.ax_accel.set_xlim(time_min, time_max)
+        
+        self.ax_gyro.relim()
+        self.ax_gyro.autoscale_view()
+        self.ax_gyro.set_xlim(time_min, time_max)
+        
+        self.ax_range.relim()
+        self.ax_range.autoscale_view()
+        self.ax_range.set_xlim(time_min, time_max)
+        
+        self.ax_signal_rate.relim()
+        self.ax_signal_rate.autoscale_view()
+        self.ax_signal_rate.set_xlim(time_min, time_max)
+        
+        self.canvas.draw_idle()
 
 
 # --- Data Receiver and Logger ---
@@ -655,6 +656,7 @@ class DataReceiver:
                 # Update GUI with all MPU samples paired with TOF data where available (thread-safe via after())
                 # Skip updates if playback is active
                 if not self.gui.playback_mode:
+                    batch = []
                     for i, (accel, gyro, mpu_ts) in enumerate(mpu_sensor_data):
                         if i < len(tof_data):
                             distance, tof_ts, signal_rate = tof_data[i]
@@ -662,7 +664,15 @@ class DataReceiver:
                             distance = 0xFFFE
                             tof_ts = None
                             signal_rate = None
-                        self.gui.after(0, self.gui.update_plots, accel, gyro, distance, mpu_ts, tof_ts, signal_rate)
+                        batch.append({
+                            'accel': accel,
+                            'gyro': gyro,
+                            'distance': distance,
+                            'mpu_ts': mpu_ts,
+                            'tof_ts': tof_ts,
+                            'signal_rate': signal_rate
+                        })
+                    self.gui.after(0, self.gui.update_plots, batch)
 
             except Exception as e:
                 # Queue timeout is expected, but print other errors
