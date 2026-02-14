@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import time
 import os
+from shot_classifier import ShotClassifier
 
 # --- Configuration ---
 UDP_IP = "0.0.0.0"  # Listen on all available interfaces
@@ -64,6 +65,10 @@ class SensorGui(tk.Tk):
         self.playback_pause_time = 0  # Track when pause started
         self.playback_thread = None
         self.playback_running = False
+        
+        # Shot classifier
+        self.shot_classifier = ShotClassifier()
+        self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
 
         self.create_control_panel()
         self.create_plots()
@@ -99,6 +104,13 @@ class SensorGui(tk.Tk):
         tk.Label(status_frame, text="Status:", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
         self.status_label = tk.Label(status_frame, text="Live", font=("Arial", 10, "bold"), fg="red")
         self.status_label.pack(side=tk.LEFT, padx=5)
+        
+        # Shot statistics label
+        stats_frame = tk.Frame(control_frame)
+        stats_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=0, padx=10)
+        tk.Label(stats_frame, text="Shots:", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+        self.stats_label = tk.Label(stats_frame, text="0/0 (0%)", font=("Arial", 10, "bold"), fg="blue")
+        self.stats_label.pack(side=tk.LEFT, padx=5)
 
         # Right side: Playback controls
         right_frame = tk.LabelFrame(control_frame, text="Playback", padx=10, pady=5)
@@ -140,6 +152,9 @@ class SensorGui(tk.Tk):
     def start_recording(self):
         """Enable recording of incoming data."""
         self.recording = True
+        self.shot_classifier.reset()
+        self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
+        self.stats_label.config(text="0/0 (0%)")
         self.record_button.config(state=tk.DISABLED)
         self.stop_record_button.config(state=tk.NORMAL)
         print(f"Recording started to: {self.log_file_path}")
@@ -210,7 +225,7 @@ class SensorGui(tk.Tk):
             messagebox.showwarning("Warning", "No data loaded for playback.")
             return
         
-        # Only clear plot data if this is initial play (not resuming from pause)
+        # Only clear plot data and reset classifier if this is initial play (not resuming from pause)
         if not self.playback_paused:
             self.timestamps.clear()
             self.range_timestamps.clear()
@@ -220,6 +235,10 @@ class SensorGui(tk.Tk):
                 self.gyro_data[key].clear()
             self.range_data.clear()
             self.signal_rate_data.clear()
+            # Reset shot classifier for new playback session
+            self.shot_classifier.reset()
+            self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
+            self.stats_label.config(text="0/0 (0%)")
             self.canvas.draw_idle()
         
         self.playback_mode = True  # Disable UDP updates
@@ -331,6 +350,10 @@ class SensorGui(tk.Tk):
             self.gyro_data[key].clear()
         self.range_data.clear()
         self.signal_rate_data.clear()
+        # Reset shot classifier
+        self.shot_classifier.reset()
+        self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
+        self.stats_label.config(text="0/0 (0%)")
         self.canvas.draw_idle()
         
         # Reset index and start playing from beginning
@@ -393,6 +416,19 @@ class SensorGui(tk.Tk):
         Args:
             samples: List of dicts with 'accel', 'gyro', 'distance', 'mpu_ts', 'tof_ts', 'signal_rate'
         """
+        # Process batch through shot classifier
+        new_shots = self.shot_classifier.process_batch(samples)
+        
+        # Update statistics
+        if new_shots:
+            self.shot_stats = self.shot_classifier.get_statistics()
+            makes = self.shot_stats['makes']
+            total = self.shot_stats['total']
+            pct = self.shot_stats['percentage']
+            self.stats_label.config(text=f"{makes}/{total} ({pct:.0f}%)")
+            for shot in new_shots:
+                print(f"🏀 Shot: {shot['classification']} @ {shot['impact_time']:.3f}s (confidence: {shot['confidence']:.2f})")
+        
         # Add all samples to buffers
         for sample in samples:
             timestamp = sample['mpu_ts']
