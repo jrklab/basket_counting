@@ -10,6 +10,10 @@ def main():
     """Initialize and run the application."""
     gui = SensorGui()
     receiver = DataReceiver(gui)
+    
+    # Pass camera manager to GUI
+    gui.camera_manager = receiver.camera
+    
     receiver.start()
     
     try:

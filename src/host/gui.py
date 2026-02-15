@@ -1,6 +1,7 @@
 """
 GUI for the basketball shot counter.
 Displays real-time sensor data in 4 plots and manages recording/playback.
+Includes optional USB camera video display.
 """
 
 import tkinter as tk
@@ -12,6 +13,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import time
 import os
 import csv
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
 
 from config import PLOT_HISTORY_SIZE, PLOT_DISPLAY_WINDOW, LOG_FILE, SAMPLES_PER_PACKET
 from shot_classifier import ShotClassifier
@@ -23,7 +27,7 @@ class SensorGui(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("ESP32 Basketball Shot Counter")
-        self.geometry("1200x700")
+        self.geometry("2200x800")
 
         # Data buffers for plotting
         self.timestamps = deque(maxlen=PLOT_HISTORY_SIZE)
@@ -62,9 +66,15 @@ class SensorGui(tk.Tk):
         # Shot classifier
         self.shot_classifier = ShotClassifier()
         self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
+        
+        # Camera display
+        self.camera_manager = None  # Will be set by main.py
+        self.current_camera_image = None
+        self.camera_label = None
+        self.playback_frames_dir = None  # Set when loading playback file
 
         self.create_control_panel()
-        self.create_plots()
+        self.create_main_layout()
 
     def create_control_panel(self):
         """Creates the control panel with recording and playback buttons."""
@@ -171,6 +181,15 @@ class SensorGui(tk.Tk):
         if file_path:
             try:
                 self.playback_data = []
+                self.playback_frames_dir = None
+                
+                # Check if frames directory exists (new format with camera)
+                base_dir = os.path.dirname(file_path)
+                frames_dir = os.path.join(base_dir, "frames")
+                if os.path.exists(frames_dir):
+                    self.playback_frames_dir = frames_dir
+                    print(f"✓ Found camera frames in: {frames_dir}")
+                
                 with open(file_path, 'r') as f:
                     csv_reader = csv.reader(f)
                     next(csv_reader)  # Skip header
@@ -183,6 +202,7 @@ class SensorGui(tk.Tk):
                                 tof_ts = int(row[7])
                                 distance = int(row[8])
                                 signal_rate = int(row[9]) if len(row) > 9 else 0
+                                frame_id = int(row[12]) if len(row) > 12 else -1
                                 
                                 # Handle TOF data validation
                                 if distance == 0xFFFF or distance == 65535:
@@ -194,7 +214,8 @@ class SensorGui(tk.Tk):
                                     'gyro': [gx, gy, gz],
                                     'tof_ts': tof_ts,
                                     'distance': distance,
-                                    'signal_rate': signal_rate
+                                    'signal_rate': signal_rate,
+                                    'frame_id': frame_id
                                 })
                             except (ValueError, IndexError):
                                 continue
@@ -329,9 +350,35 @@ class SensorGui(tk.Tk):
         self.range_data.clear()
         self.signal_rate_data.clear()
 
-    def create_plots(self):
+    def create_main_layout(self):
+        """Creates the main layout with plots on left and camera on right."""
+        main_frame = tk.Frame(self)
+        main_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+        main_frame.columnconfigure(0, weight=1)  # Plots column (50%)
+        main_frame.columnconfigure(1, weight=1)  # Camera column (50%)
+        
+        # Left side: plots
+        left_frame = tk.Frame(main_frame)
+        left_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+        
+        self.create_plots(parent=left_frame)
+        
+        # Right side: camera display
+        right_frame = tk.Frame(main_frame, bg='black')
+        right_frame.grid(row=0, column=1, sticky='nsew', padx=5, pady=5)
+        right_frame.rowconfigure(1, weight=1)  # Make label expand vertically
+        right_frame.columnconfigure(0, weight=1)  # Make label expand horizontally
+        
+        tk.Label(right_frame, text="Camera Feed", font=("Arial", 10, "bold"), bg='black', fg='white').grid(row=0, column=0, sticky='ew')
+        self.camera_label = tk.Label(right_frame, bg='black')
+        self.camera_label.grid(row=1, column=0, sticky='nsew', padx=5, pady=5)
+
+    def create_plots(self, parent=None):
         """Creates and embeds the matplotlib plots."""
-        self.fig, (self.ax_accel, self.ax_gyro, self.ax_range, self.ax_signal_rate) = plt.subplots(4, 1, figsize=(9, 10))
+        if parent is None:
+            parent = self
+            
+        self.fig, (self.ax_accel, self.ax_gyro, self.ax_range, self.ax_signal_rate) = plt.subplots(4, 1, figsize=(8, 10))
 
         # Acceleration plot
         self.ax_accel.set_title("Accelerometer Data")
@@ -370,9 +417,8 @@ class SensorGui(tk.Tk):
         self.signal_rate_line = self.ax_signal_rate.plot([], [], marker='.', label='Signal Rate')[0]
         self.ax_signal_rate.legend(loc='upper left')
         self.ax_signal_rate.grid(True)
-
         # Create frame for canvas
-        frame = tk.Frame(self)
+        frame = tk.Frame(parent)
         frame.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=frame)
@@ -383,7 +429,7 @@ class SensorGui(tk.Tk):
         Updates plots with a batch of samples.
         
         Args:
-            samples: List of dicts with 'accel', 'gyro', 'distance', 'mpu_ts', 'tof_ts', 'signal_rate'
+            samples: List of dicts with 'accel', 'gyro', 'distance', 'mpu_ts', 'tof_ts', 'signal_rate', 'frame_id'
         """
         # Process batch through shot classifier
         new_shots = self.shot_classifier.process_batch(samples)
@@ -402,6 +448,26 @@ class SensorGui(tk.Tk):
                     print(f"🏀 Shot: {shot['classification']} ({basket_type}) @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
                 else:
                     print(f"🏀 Shot: {shot['classification']} @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
+        
+        # Handle camera frame display (for live mode)
+        if not self.playback_mode and self.camera_manager and self.camera_manager.is_available:
+            # Display live camera frame (always get the latest)
+            frame, _, _ = self.camera_manager.get_current_frame()
+            if frame is not None:
+                self._display_camera_frame(frame)
+        
+        # Handle camera frame display (for playback mode)
+        if self.playback_mode and self.playback_frames_dir and len(samples) > 0:
+            for sample in samples:
+                frame_id = sample.get('frame_id', -1)
+                if frame_id >= 0:
+                    # Load and display frame from disk
+                    frame_path = os.path.join(self.playback_frames_dir, f"frame_{frame_id:06d}.jpg")
+                    if os.path.exists(frame_path):
+                        frame = cv2.imread(frame_path)
+                        if frame is not None:
+                            self._display_camera_frame(frame)
+                    break
         
         # Add all samples to buffers
         for sample in samples:
@@ -526,4 +592,48 @@ class SensorGui(tk.Tk):
                 self.ax_range.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
                 self.ax_signal_rate.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
         
-        self.canvas.draw_idle()
+        self.canvas.draw_idle()    
+    def _display_camera_frame(self, frame):
+        """Display a camera frame in the camera label."""
+        if frame is None or self.camera_label is None:
+            return
+        
+        try:
+            # Get actual label dimensions
+            label_width = self.camera_label.winfo_width()
+            label_height = self.camera_label.winfo_height()
+            
+            # If label not yet rendered, use reasonable defaults
+            if label_width <= 1:
+                label_width = 1024
+            if label_height <= 1:
+                label_height = 720
+            
+            # Calculate resize dimensions to fit label while maintaining aspect ratio
+            h, w = frame.shape[:2]
+            aspect = w / h
+            
+            # Fit to label dimensions
+            if (label_width / label_height) > aspect:
+                # Label is wider, fit to height
+                target_h = label_height
+                target_w = int(target_h * aspect)
+            else:
+                # Label is taller, fit to width
+                target_w = label_width
+                target_h = int(target_w / aspect)
+            
+            resized = cv2.resize(frame, (target_w, target_h))
+            
+            # Convert BGR to RGB for Tkinter
+            rgb_frame = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            
+            # Convert to PIL Image then PhotoImage
+            pil_image = Image.fromarray(rgb_frame)
+            photo = ImageTk.PhotoImage(pil_image)
+            
+            # Update label
+            self.camera_label.config(image=photo)
+            self.camera_label.image = photo  # Keep reference
+        except Exception as e:
+            print(f"⚠️  Error displaying camera frame: {e}")

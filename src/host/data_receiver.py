@@ -9,11 +9,14 @@ import csv
 import time
 from queue import Queue
 from threading import Thread
+import os
 
 from config import (
     UDP_IP, UDP_PORT, LOG_FILE, SAMPLES_PER_PACKET,
-    ACCEL_SENSITIVITY, GYRO_SENSITIVITY
+    ACCEL_SENSITIVITY, GYRO_SENSITIVITY,
+    CAMERA_ID, CAMERA_FPS, CAMERA_RESOLUTION, CAMERA_JPEG_QUALITY
 )
+from camera_utils import CameraManager
 
 
 class DataReceiver:
@@ -57,6 +60,16 @@ class DataReceiver:
 
         self.log_file = None
         self.csv_writer = None
+        
+        # Initialize camera first (before _init_log_file)
+        self.camera = CameraManager(
+            camera_id=CAMERA_ID,
+            fps=CAMERA_FPS,
+            resolution=CAMERA_RESOLUTION,
+            jpeg_quality=CAMERA_JPEG_QUALITY
+        )
+        self.camera_frame_mapping = {}  # Map sample index to frame_id
+        
         self._init_log_file()
         
         # Data queue for passing packets from receiver thread to processor thread
@@ -74,9 +87,15 @@ class DataReceiver:
         self.csv_writer.writerow([
             "MPU_Timestamp (ms)", "AcX (g)", "AcY (g)", "AcZ (g)", 
             "GyX (dps)", "GyY (dps)", "GyZ (dps)", 
-            "TOF_Timestamp (ms)", "Range (mm)", "Signal_Rate"
+            "TOF_Timestamp (ms)", "Range (mm)", "Signal_Rate",
+            "Host_TS_UDP (ms)", "Host_TS_Frame (ms)", "Frame_ID"
         ])
         self.log_file.flush()  # Flush header immediately
+        
+        # Prepare camera recording directory
+        if self.camera.is_available:
+            recording_dir = os.path.dirname(log_path) or "."
+            self.camera.prepare_recording(recording_dir)
 
     def receive_data(self):
         """
@@ -130,6 +149,9 @@ class DataReceiver:
                 # Get packet with timeout to check running flag periodically
                 data = self.packet_queue.get(timeout=0.1)
                 
+                # Record host timestamp when UDP packet is processed
+                host_ts_udp = time.time_ns() // 1_000_000  # ns → ms
+                
                 # Parse the packet
                 packet_timestamp = struct.unpack('!I', data[0:4])[0]
                 num_mpu_samples = struct.unpack('!B', data[4:5])[0]
@@ -165,7 +187,16 @@ class DataReceiver:
                         sample_timestamp = packet_timestamp - timestamp_delta
                         tof_data.append((distance, sample_timestamp, signal_rate))
                 
-                # Log all MPU samples with available TOF data (only if recording)
+                # Save any new camera frames and get metadata
+                frame_id = -1
+                host_ts_frame = None
+                if self.camera.is_available and self.gui.recording:
+                    fid, ts = self.camera.save_frame_if_new()
+                    if fid is not None:
+                        frame_id = fid
+                        host_ts_frame = ts
+                
+                # Log all MPU samples with available TOF data and camera metadata
                 if self.gui.recording:
                     for i, (accel, gyro, mpu_ts) in enumerate(mpu_sensor_data):
                         if i < len(tof_data):
@@ -174,19 +205,26 @@ class DataReceiver:
                             distance = 0xFFFE  # No TOF data available
                             signal_rate = 0
                             tof_ts = mpu_ts    # Use MPU timestamp as reference
-                        self.csv_writer.writerow([mpu_ts] + accel + gyro + [tof_ts, distance, signal_rate])
+                        
+                        # Use frame data if available, otherwise -1
+                        frame_id_logged = frame_id if frame_id >= 0 else -1
+                        host_ts_frame_logged = host_ts_frame if host_ts_frame is not None else -1
+                        
+                        self.csv_writer.writerow([
+                            mpu_ts, accel[0], accel[1], accel[2], 
+                            gyro[0], gyro[1], gyro[2], 
+                            tof_ts, distance, signal_rate,
+                            host_ts_udp, host_ts_frame_logged, frame_id_logged
+                        ])
                     
-                    # Flush CSV file periodically (every 10 packets) instead of every sample
-                    # This reduces I/O overhead significantly
-                    # (10 packets × 20 samples/packet = 200 samples before flush)
+                    # Flush CSV file periodically
                     if packet_timestamp % 10 == 0:
                         self.log_file.flush()
                 
                 print(f"Received packet: {num_mpu_samples} MPU samples, {num_tof_samples} TOF samples")
                 print(f">>> TOF Range values (mm): {[d for d, _, _ in tof_data]}")
                 
-                # Update GUI with all MPU samples paired with TOF data where available (thread-safe via after())
-                # Skip updates if playback is active
+                # Update GUI with all MPU samples paired with TOF data (thread-safe via after())
                 if not self.gui.playback_mode:
                     batch = []
                     for i, (accel, gyro, mpu_ts) in enumerate(mpu_sensor_data):
@@ -194,15 +232,17 @@ class DataReceiver:
                             distance, tof_ts, signal_rate = tof_data[i]
                         else:
                             distance = 0xFFFE
-                            tof_ts = None
-                            signal_rate = None
+                            tof_ts = mpu_ts  # Use MPU timestamp as fallback
+                            signal_rate = 0  # Use 0 instead of None
                         batch.append({
                             'accel': accel,
                             'gyro': gyro,
                             'distance': distance,
                             'mpu_ts': mpu_ts,
                             'tof_ts': tof_ts,
-                            'signal_rate': signal_rate
+                            'signal_rate': signal_rate,
+                            'host_ts_udp': host_ts_udp,
+                            'frame_id': frame_id if frame_id >= 0 else -1
                         })
                     self.gui.after(0, self.gui.update_plots, batch)
 
@@ -221,10 +261,14 @@ class DataReceiver:
         
         processor_thread = Thread(target=self.process_data, daemon=True)
         processor_thread.start()
+        
+        # Start camera capture
+        self.camera.start_capture()
 
     def close(self):
         """Stop receiver and close resources."""
         self.running = False
+        self.camera.cleanup()
         self.sock.close()
         if self.log_file:
             self.log_file.close()
