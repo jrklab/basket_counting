@@ -13,7 +13,7 @@ class ThresholdConfig:
     """Thresholds for shot detection. Tune these based on your hardware/environment."""
     
     # MPU Impact Detection
-    IMPACT_ACCEL_THRESHOLD = 4.0  # g-force, spike above baseline to trigger impact
+    IMPACT_ACCEL_THRESHOLD = 3.0  # g-force, spike above baseline to trigger impact
 
     # TOF Basket Detection
     TOF_DISTANCE_THRESHOLD = 350  # mm, ball in basket when distance < this

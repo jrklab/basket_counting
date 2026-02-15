@@ -18,7 +18,7 @@ UDP_PORT = 12345
 LOG_FILE = "sensor_data.csv"
 SAMPLES_PER_PACKET = 20
 TOF_SAMPLES_PER_PACKET = 5
-PLOT_HISTORY_SIZE = 500  # Number of data points to buffer (5 seconds worth)
+PLOT_HISTORY_SIZE = int(200*2.5)  # Number of data points to buffer (5 seconds worth)
 PLOT_DISPLAY_WINDOW = 5.0  # Display window in seconds (only show last 5s)
 
 # --- Conversion Factors ---
@@ -371,7 +371,7 @@ class SensorGui(tk.Tk):
         self.fig, (self.ax_accel, self.ax_gyro, self.ax_range, self.ax_signal_rate) = plt.subplots(4, 1, figsize=(9, 10))
 
         # Acceleration plot
-        self.ax_accel.set_title("Accelerometer Data, Subtracting 1g from Z-axis")
+        self.ax_accel.set_title("Accelerometer Data")
         self.ax_accel.set_ylabel("Acceleration (g)")
         self.accel_lines = {
             'x': self.ax_accel.plot([], [], marker='.', label='AcX')[0],
@@ -454,8 +454,8 @@ class SensorGui(tk.Tk):
             # Append new data
             self.accel_data['x'].append(accel[0])
             self.accel_data['y'].append(accel[1])
-            self.accel_data['z'].append(accel[2] - 1.0)
-            magnitude = (accel[0]**2 + accel[1]**2 + (accel[2] - 1.0)**2)**0.5
+            self.accel_data['z'].append(accel[2])
+            magnitude = (accel[0]**2 + accel[1]**2 + accel[2]**2)**0.5
             self.accel_data['magnitude'].append(magnitude)
             
             self.gyro_data['x'].append(gyro[0])
