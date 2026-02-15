@@ -1,40 +1,33 @@
-import socket
-import struct
-import csv
+"""
+GUI for the basketball shot counter.
+Displays real-time sensor data in 4 plots and manages recording/playback.
+"""
+
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
 from threading import Thread
-from queue import Queue
 from collections import deque
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import time
 import os
+import csv
+
+from config import PLOT_HISTORY_SIZE, PLOT_DISPLAY_WINDOW, LOG_FILE, SAMPLES_PER_PACKET
 from shot_classifier import ShotClassifier
 
-# --- Configuration ---
-UDP_IP = "0.0.0.0"  # Listen on all available interfaces
-UDP_PORT = 12345
-LOG_FILE = "sensor_data.csv"
-SAMPLES_PER_PACKET = 20
-TOF_SAMPLES_PER_PACKET = 5
-PLOT_HISTORY_SIZE = int(200*2.5)  # Number of data points to buffer (5 seconds worth)
-PLOT_DISPLAY_WINDOW = 5.0  # Display window in seconds (only show last 5s)
 
-# --- Conversion Factors ---
-ACCEL_SENSITIVITY = 2048.0  # LSB/g for ±16g range
-GYRO_SENSITIVITY = 16.384     # LSB/°/s for ±2000°/s range
-
-# --- GUI ---
 class SensorGui(tk.Tk):
+    """Main GUI window for sensor visualization and shot classification."""
+    
     def __init__(self):
         super().__init__()
-        self.title("ESP32 MPU6050 Data")
+        self.title("ESP32 Basketball Shot Counter")
         self.geometry("1200x700")
 
         # Data buffers for plotting
-        self.timestamps = deque(maxlen=PLOT_HISTORY_SIZE)  # For MPU data
-        self.range_timestamps = deque(maxlen=PLOT_HISTORY_SIZE)  # For TOF data
+        self.timestamps = deque(maxlen=PLOT_HISTORY_SIZE)
+        self.range_timestamps = deque(maxlen=PLOT_HISTORY_SIZE)
         self.accel_data = {
             'x': deque(maxlen=PLOT_HISTORY_SIZE),
             'y': deque(maxlen=PLOT_HISTORY_SIZE),
@@ -47,7 +40,7 @@ class SensorGui(tk.Tk):
             'z': deque(maxlen=PLOT_HISTORY_SIZE)
         }
         self.range_data = deque(maxlen=PLOT_HISTORY_SIZE)
-        self.signal_rate_data = deque(maxlen=PLOT_HISTORY_SIZE)  # Add signal rate buffer
+        self.signal_rate_data = deque(maxlen=PLOT_HISTORY_SIZE)
 
         # Throttle plot updates to 10 FPS (100ms min interval)
         self.last_plot_update_time = 0
@@ -58,11 +51,11 @@ class SensorGui(tk.Tk):
         self.log_file_path = LOG_FILE
         
         # Playback state
-        self.playback_mode = False  # When True, UDP updates are ignored
+        self.playback_mode = False
         self.playback_data = []
         self.playback_index = 0
         self.playback_paused = False
-        self.playback_pause_time = 0  # Track when pause started
+        self.playback_pause_time = 0
         self.playback_thread = None
         self.playback_running = False
         
@@ -95,7 +88,6 @@ class SensorGui(tk.Tk):
                                             bg="lightcoral", width=10, state=tk.DISABLED)
         self.stop_record_button.pack(side=tk.LEFT, padx=3)
 
-        # Log file path
         self.log_path_label = tk.Label(recording_frame, text=f"Path: {self.log_file_path}", wraplength=300, font=("Arial", 8))
         self.log_path_label.pack(side=tk.LEFT, padx=5)
 
@@ -181,7 +173,7 @@ class SensorGui(tk.Tk):
                 self.playback_data = []
                 with open(file_path, 'r') as f:
                     csv_reader = csv.reader(f)
-                    header = next(csv_reader)  # Skip header
+                    next(csv_reader)  # Skip header
                     for row in csv_reader:
                         if len(row) >= 9:
                             try:
@@ -190,12 +182,9 @@ class SensorGui(tk.Tk):
                                 gx, gy, gz = float(row[4]), float(row[5]), float(row[6])
                                 tof_ts = int(row[7])
                                 distance = int(row[8])
-                                # Signal rate may be in column 9 (new format) or missing (old format)
                                 signal_rate = int(row[9]) if len(row) > 9 else 0
                                 
                                 # Handle TOF data validation
-                                # 0xFFFE (65534) = dummy data, keep as-is
-                                # 0xFFFF (65535) = invalid return, set to -1
                                 if distance == 0xFFFF or distance == 65535:
                                     distance = -1
                                 
@@ -232,24 +221,15 @@ class SensorGui(tk.Tk):
         
         # Only clear plot data and reset classifier if this is initial play (not resuming from pause)
         if not self.playback_paused:
-            self.timestamps.clear()
-            self.range_timestamps.clear()
-            for key in self.accel_data:
-                self.accel_data[key].clear()
-            for key in self.gyro_data:
-                self.gyro_data[key].clear()
-            self.range_data.clear()
-            self.signal_rate_data.clear()
-            # Reset shot classifier for new playback session
+            self._clear_plot_data()
             self.shot_classifier.reset()
             self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
             self.stats_label.config(text="0/0 (0%)")
             self.canvas.draw_idle()
         
-        self.playback_mode = True  # Disable UDP updates
+        self.playback_mode = True
         self.playback_paused = False
         
-        # Only start new thread if playback isn't already running
         if not self.playback_running:
             self.playback_running = True
             self.playback_thread = Thread(target=self._playback_worker, daemon=True)
@@ -263,34 +243,30 @@ class SensorGui(tk.Tk):
         print("Playback started/resumed.")
 
     def _playback_worker(self):
-        """Worker thread for playback. Reads 20 samples at a time like UDP packets."""
+        """Worker thread for playback."""
         if self.playback_index >= len(self.playback_data):
             self.playback_index = 0
         
         while self.playback_running and self.playback_index < len(self.playback_data):
-            # Check if paused
             if self.playback_paused:
                 time.sleep(0.05)
                 continue
             
-            # Accumulate 20 samples and process as a batch
+            # Accumulate SAMPLES_PER_PACKET samples and process as a batch
             batch_end = min(self.playback_index + SAMPLES_PER_PACKET, len(self.playback_data))
             batch = self.playback_data[self.playback_index:batch_end]
             
-            # Update GUI with entire batch at once
             self.after(0, self.update_plots, batch)
             
             self.playback_index = batch_end
-            # Delay 100ms between batches to match plot redraw interval
             time.sleep(0.1)
         
-        # Playback finished
         if self.playback_running:
             self.after(0, self._playback_finished)
 
     def _playback_finished(self):
         """Called when playback finishes."""
-        self.playback_mode = False  # Re-enable UDP updates
+        self.playback_mode = False
         self.playback_running = False
         self.play_button.config(state=tk.NORMAL)
         self.pause_button.config(state=tk.DISABLED)
@@ -302,7 +278,7 @@ class SensorGui(tk.Tk):
     def pause_playback(self):
         """Pause playback."""
         self.playback_paused = True
-        self.playback_pause_time = time.time()  # Record when pause started
+        self.playback_pause_time = time.time()
         self.play_button.config(state=tk.NORMAL)
         self.pause_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
@@ -312,23 +288,13 @@ class SensorGui(tk.Tk):
         """Stop playback and return to live recording mode."""
         self.playback_running = False
         self.playback_paused = False
-        self.playback_mode = False  # Re-enable UDP updates
+        self.playback_mode = False
         
-        # Wait briefly for playback thread to stop
         time.sleep(0.1)
         
-        # Clear plot data
-        self.timestamps.clear()
-        self.range_timestamps.clear()
-        for key in self.accel_data:
-            self.accel_data[key].clear()
-        for key in self.gyro_data:
-            self.gyro_data[key].clear()
-        self.range_data.clear()
-        self.signal_rate_data.clear()
+        self._clear_plot_data()
         self.canvas.draw_idle()
         
-        # Update button states
         self.play_button.config(state=tk.NORMAL)
         self.pause_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.DISABLED)
@@ -336,17 +302,24 @@ class SensorGui(tk.Tk):
         self.status_label.config(text="Live", fg="red")
         print("Playback stopped. Returning to live recording.")
 
-
     def restart_playback(self):
         """Restart playback from the beginning."""
-        # Stop current playback if running
         self.playback_running = False
         self.playback_paused = False
         
-        # Wait briefly for playback thread to stop
         time.sleep(0.1)
         
-        # Clear plot data
+        self._clear_plot_data()
+        self.shot_classifier.reset()
+        self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
+        self.stats_label.config(text="0/0 (0%)")
+        self.canvas.draw_idle()
+        
+        self.playback_index = 0
+        self.play_playback()
+
+    def _clear_plot_data(self):
+        """Clear all plot data buffers."""
         self.timestamps.clear()
         self.range_timestamps.clear()
         for key in self.accel_data:
@@ -355,16 +328,6 @@ class SensorGui(tk.Tk):
             self.gyro_data[key].clear()
         self.range_data.clear()
         self.signal_rate_data.clear()
-        # Reset shot classifier
-        self.shot_classifier.reset()
-        self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
-        self.stats_label.config(text="0/0 (0%)")
-        self.canvas.draw_idle()
-        
-        # Reset index and start playing from beginning
-        self.playback_index = 0
-        self.play_playback()
-
 
     def create_plots(self):
         """Creates and embeds the matplotlib plots."""
@@ -416,7 +379,8 @@ class SensorGui(tk.Tk):
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=1)
 
     def update_plots(self, samples):
-        """Updates plots with a batch of samples (same for live and playback modes).
+        """
+        Updates plots with a batch of samples.
         
         Args:
             samples: List of dicts with 'accel', 'gyro', 'distance', 'mpu_ts', 'tof_ts', 'signal_rate'
@@ -451,7 +415,6 @@ class SensorGui(tk.Tk):
             timestamp_sec = timestamp / 1000.0
             self.timestamps.append(timestamp_sec)
             
-            # Append new data
             self.accel_data['x'].append(accel[0])
             self.accel_data['y'].append(accel[1])
             self.accel_data['z'].append(accel[2])
@@ -501,7 +464,7 @@ class SensorGui(tk.Tk):
                 self.range_data.popleft()
                 self.signal_rate_data.popleft()
         
-        # Update plot once for the entire batch
+        # Update plot lines
         for axis in ['x', 'y', 'z', 'magnitude']:
             self.accel_lines[axis].set_data(self.timestamps, self.accel_data[axis])
         for axis in ['x', 'y', 'z']:
@@ -510,12 +473,10 @@ class SensorGui(tk.Tk):
         self.range_line.set_data(self.range_timestamps, self.range_data)
         self.signal_rate_line.set_data(self.range_timestamps, self.signal_rate_data)
         
-        # Determine the time range based on MPU data (which is trimmed to 5 seconds)
-        # This ensures all plots display the same time window
+        # Determine time range based on MPU data
         if len(self.timestamps) > 0:
             time_min = self.timestamps[0]
             time_max = self.timestamps[-1]
-            # Add 5% padding to both sides
             time_range = time_max - time_min if time_max > time_min else 1
             time_min -= time_range * 0.05
             time_max += time_range * 0.05
@@ -540,27 +501,25 @@ class SensorGui(tk.Tk):
         self.ax_signal_rate.set_xlim(time_min, time_max)
         
         # Clear previous shot event lines from all axes
-        for line in self.ax_accel.get_lines()[4:]:  # Skip first 4 (data lines)
+        for line in self.ax_accel.get_lines()[4:]:
             line.remove()
-        for line in self.ax_gyro.get_lines()[3:]:  # Skip first 3 (data lines)
+        for line in self.ax_gyro.get_lines()[3:]:
             line.remove()
-        for line in self.ax_range.get_lines()[1:]:  # Skip first (data line)
+        for line in self.ax_range.get_lines()[1:]:
             line.remove()
-        for line in self.ax_signal_rate.get_lines()[1:]:  # Skip first (data line)
+        for line in self.ax_signal_rate.get_lines()[1:]:
             line.remove()
         
         # Plot shot events on all 4 plots
         all_shots = self.shot_classifier.get_all_shots()
         for shot in all_shots:
             if shot['classification'] == 'MAKE':
-                # Red vertical line at basket_time on all plots
                 basket_time = shot['basket_time']
                 self.ax_accel.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
                 self.ax_gyro.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
                 self.ax_range.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
                 self.ax_signal_rate.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
             elif shot['classification'] == 'MISS':
-                # Blue vertical line at impact_time on all plots
                 impact_time = shot['impact_time']
                 self.ax_accel.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
                 self.ax_gyro.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
@@ -568,217 +527,3 @@ class SensorGui(tk.Tk):
                 self.ax_signal_rate.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
         
         self.canvas.draw_idle()
-
-
-# --- Data Receiver and Logger ---
-class DataReceiver:
-    def __init__(self, gui):
-        self.gui = gui
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Allow reusing the socket address and port
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except AttributeError:
-            # SO_REUSEPORT not available on all systems
-            pass
-        
-        # Set socket timeout to avoid blocking forever
-        self.sock.settimeout(1.0)
-        
-        # Retry binding with delays to handle TIME_WAIT state
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                self.sock.bind((UDP_IP, UDP_PORT))
-                print(f"Listening on {UDP_IP}:{UDP_PORT}")
-                break
-            except OSError as e:
-                if attempt < max_retries - 1:
-                    print(f"Port {UDP_PORT} in use, retrying in 2 seconds... (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(2)
-                else:
-                    print(f"Failed to bind to port {UDP_PORT} after {max_retries} attempts")
-                    raise
-
-        self.log_file = None
-        self.csv_writer = None
-        self._init_log_file()
-        
-        # Data queue for passing packets from receiver thread to processor thread
-        self.packet_queue = Queue(maxsize=100)
-        self.running = True
-
-    def _init_log_file(self):
-        """Initialize or reinitialize the log file."""
-        log_path = self.gui.log_file_path
-        if self.log_file:
-            self.log_file.close()
-        
-        self.log_file = open(log_path, "w", newline="")
-        self.csv_writer = csv.writer(self.log_file)
-        self.csv_writer.writerow([
-            "MPU_Timestamp (ms)", "AcX (g)", "AcY (g)", "AcZ (g)", "GyX (dps)", "GyY (dps)", "GyZ (dps)", "TOF_Timestamp (ms)", "Range (mm)", "Signal_Rate"
-        ])
-        self.log_file.flush()  # Flush header immediately
-
-    def receive_data(self):
-        """Receives UDP packets and queues them for processing.
-        
-        This thread runs as fast as possible to receive packets.
-        Blocking operations (CSV I/O, GUI updates) are done in a separate thread.
-        """
-        packets_received = 0
-        packets_dropped = 0
-        last_print_time = time.time()
-        packets_since_last_print = 0
-        
-        while self.running:
-            try:
-                data, addr = self.sock.recvfrom(2048)
-                packets_received += 1
-                packets_since_last_print += 1
-                
-                try:
-                    # Try to queue the packet without blocking
-                    # If queue is full, drop the packet to prevent blocking
-                    self.packet_queue.put_nowait(data)
-                except:
-                    packets_dropped += 1
-                    if packets_dropped % 10 == 0:
-                        print(f"⚠️  Dropped {packets_dropped} packets (queue full). Receiver may be too slow.")
-                
-                # Print frequency every second
-                current_time = time.time()
-                if current_time - last_print_time >= 1.0:
-                    frequency = packets_since_last_print / (current_time - last_print_time)
-                    print(f"📊 Packet RX frequency: {frequency:.1f} Hz ({packets_since_last_print} packets/sec) | Total: {packets_received} | Dropped: {packets_dropped}")
-                    packets_since_last_print = 0
-                    last_print_time = current_time
-                        
-            except socket.timeout:
-                # Timeout is expected when no data is available
-                continue
-            except Exception as e:
-                print(f"Error receiving data: {e}")
-
-    def process_data(self):
-        """Processes queued packets: parses, logs to CSV, and updates GUI.
-        
-        This runs in a separate thread to avoid blocking the receiver thread.
-        """
-        while self.running:
-            try:
-                # Get packet with timeout to check running flag periodically
-                data = self.packet_queue.get(timeout=0.1)
-                
-                # Parse the packet
-                packet_timestamp = struct.unpack('!I', data[0:4])[0]
-                num_mpu_samples = struct.unpack('!B', data[4:5])[0]
-                
-                # Parse MPU6050 data with timestamp deltas
-                mpu_sensor_data = []
-                for i in range(num_mpu_samples):
-                    offset = 5 + i * 14
-                    timestamp_delta = struct.unpack('!H', data[offset:offset+2])[0]
-                    sample = struct.unpack('!hhhhhh', data[offset+2:offset+14])
-                    
-                    # Reconstruct sample timestamp
-                    sample_timestamp = packet_timestamp - timestamp_delta
-                    
-                    # Convert to physical units
-                    accel = [s / ACCEL_SENSITIVITY for s in sample[0:3]]
-                    gyro = [s / GYRO_SENSITIVITY for s in sample[3:6]]
-                    
-                    mpu_sensor_data.append((accel, gyro, sample_timestamp))
-                
-                # Parse VL53L1X data with timestamp deltas
-                tof_offset = 5 + num_mpu_samples * 14
-                num_tof_samples = struct.unpack('!B', data[tof_offset:tof_offset+1])[0]
-                tof_data = []
-                for i in range(8):  # Always 8 slots in fixed packet
-                    offset = tof_offset + 1 + i * 6
-                    timestamp_delta = struct.unpack('!H', data[offset:offset+2])[0]
-                    distance = struct.unpack('!H', data[offset+2:offset+4])[0]
-                    signal_rate = struct.unpack('!H', data[offset+4:offset+6])[0]
-                    
-                    # Only process if this is a valid sample (within num_tof_samples)
-                    if i < num_tof_samples:
-                        sample_timestamp = packet_timestamp - timestamp_delta
-                        tof_data.append((distance, sample_timestamp, signal_rate))
-                
-                # Log all MPU samples with available TOF data (only if recording)
-                if self.gui.recording:
-                    for i, (accel, gyro, mpu_ts) in enumerate(mpu_sensor_data):
-                        if i < len(tof_data):
-                            distance, tof_ts, signal_rate = tof_data[i]
-                        else:
-                            distance = 0xFFFE  # No TOF data available
-                            signal_rate = 0
-                            tof_ts = mpu_ts    # Use MPU timestamp as reference
-                        self.csv_writer.writerow([mpu_ts] + accel + gyro + [tof_ts, distance, signal_rate])
-                    
-                    # Flush CSV file periodically (every 10 packets) instead of every sample
-                    # This reduces I/O overhead significantly
-                    # (10 packets × 20 samples/packet = 200 samples before flush)
-                    if packet_timestamp % 10 == 0:
-                        self.log_file.flush()
-                
-                print(f"Received packet: {num_mpu_samples} MPU samples, {num_tof_samples} TOF samples")
-                print(f">>> TOF Range values (mm): {[d for d, _, _ in tof_data]}")
-                
-                # Update GUI with all MPU samples paired with TOF data where available (thread-safe via after())
-                # Skip updates if playback is active
-                if not self.gui.playback_mode:
-                    batch = []
-                    for i, (accel, gyro, mpu_ts) in enumerate(mpu_sensor_data):
-                        if i < len(tof_data):
-                            distance, tof_ts, signal_rate = tof_data[i]
-                        else:
-                            distance = 0xFFFE
-                            tof_ts = None
-                            signal_rate = None
-                        batch.append({
-                            'accel': accel,
-                            'gyro': gyro,
-                            'distance': distance,
-                            'mpu_ts': mpu_ts,
-                            'tof_ts': tof_ts,
-                            'signal_rate': signal_rate
-                        })
-                    self.gui.after(0, self.gui.update_plots, batch)
-
-            except Exception as e:
-                # Queue timeout is expected, but print other errors
-                if "Empty" not in str(type(e).__name__):
-                    print(f"❌ Error processing packet: {type(e).__name__}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                continue
-
-    def start(self):
-        """Start receiver and processor threads."""
-        receiver_thread = Thread(target=self.receive_data, daemon=True)
-        receiver_thread.start()
-        
-        processor_thread = Thread(target=self.process_data, daemon=True)
-        processor_thread.start()
-
-    def close(self):
-        self.running = False
-        self.sock.close()
-        if self.log_file:
-            self.log_file.close()
-
-# --- Main ---
-if __name__ == "__main__":
-    gui = SensorGui()
-    receiver = DataReceiver(gui)
-    receiver.start()
-    try:
-        gui.mainloop()
-    except KeyboardInterrupt:
-        print("\nKeyboard interrupt detected. Closing...")
-    finally:
-        receiver.close()
-        print("Receiver closed.")
