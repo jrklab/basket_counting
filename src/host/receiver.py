@@ -78,66 +78,71 @@ class SensorGui(tk.Tk):
         control_frame = tk.Frame(self)
         control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-        # Left side: Recording controls
-        left_frame = tk.LabelFrame(control_frame, text="Live Recording", padx=10, pady=5)
+        # Left side: Recording and Playback controls
+        left_frame = tk.LabelFrame(control_frame, text="Recording & Playback", padx=10, pady=5)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=1, padx=5)
 
         # Recording buttons
-        self.record_button = tk.Button(left_frame, text="Start Recording", command=self.start_recording,
-                                       bg="lightgreen", width=15)
-        self.record_button.pack(side=tk.LEFT, padx=5)
+        recording_frame = tk.Frame(left_frame)
+        recording_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(recording_frame, text="Live Recording:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.record_button = tk.Button(recording_frame, text="Start", command=self.start_recording,
+                                       bg="lightgreen", width=10)
+        self.record_button.pack(side=tk.LEFT, padx=3)
 
-        self.stop_record_button = tk.Button(left_frame, text="Stop Recording", command=self.stop_recording,
-                                            bg="lightcoral", width=15, state=tk.DISABLED)
-        self.stop_record_button.pack(side=tk.LEFT, padx=5)
+        self.stop_record_button = tk.Button(recording_frame, text="Stop", command=self.stop_recording,
+                                            bg="lightcoral", width=10, state=tk.DISABLED)
+        self.stop_record_button.pack(side=tk.LEFT, padx=3)
 
         # Log file path
-        self.log_path_label = tk.Label(left_frame, text=f"Path: {self.log_file_path}", wraplength=300)
+        self.log_path_label = tk.Label(recording_frame, text=f"Path: {self.log_file_path}", wraplength=300, font=("Arial", 8))
         self.log_path_label.pack(side=tk.LEFT, padx=5)
 
-        browse_button = tk.Button(left_frame, text="Browse", command=self.browse_log_path, width=10)
-        browse_button.pack(side=tk.LEFT, padx=5)
+        browse_button = tk.Button(recording_frame, text="Browse", command=self.browse_log_path, width=8)
+        browse_button.pack(side=tk.LEFT, padx=3)
+
+        # Playback buttons
+        playback_frame = tk.Frame(left_frame)
+        playback_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        
+        tk.Label(playback_frame, text="Playback:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.load_button = tk.Button(playback_frame, text="Load File", command=self.load_playback_file,
+                                     bg="lightblue", width=10)
+        self.load_button.pack(side=tk.LEFT, padx=3)
+
+        self.play_button = tk.Button(playback_frame, text="Play", command=self.play_playback,
+                                     bg="lightgreen", width=8, state=tk.DISABLED)
+        self.play_button.pack(side=tk.LEFT, padx=3)
+
+        self.pause_button = tk.Button(playback_frame, text="Pause", command=self.pause_playback,
+                                      bg="lightyellow", width=8, state=tk.DISABLED)
+        self.pause_button.pack(side=tk.LEFT, padx=3)
+
+        self.stop_button = tk.Button(playback_frame, text="Stop", command=self.stop_playback,
+                                     bg="lightcoral", width=8, state=tk.DISABLED)
+        self.stop_button.pack(side=tk.LEFT, padx=3)
+
+        self.restart_button = tk.Button(playback_frame, text="Restart", command=self.restart_playback,
+                                        bg="lightgray", width=8, state=tk.DISABLED)
+        self.restart_button.pack(side=tk.LEFT, padx=3)
+
+        self.playback_file_label = tk.Label(playback_frame, text="No file loaded", wraplength=200, font=("Arial", 8))
+        self.playback_file_label.pack(side=tk.LEFT, padx=5)
 
         # Center: Status label
         status_frame = tk.Frame(control_frame)
         status_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=0, padx=10)
-        tk.Label(status_frame, text="Status:", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        self.status_label = tk.Label(status_frame, text="Live", font=("Arial", 10, "bold"), fg="red")
-        self.status_label.pack(side=tk.LEFT, padx=5)
+        tk.Label(status_frame, text="Status:", font=("Arial", 10)).pack(side=tk.TOP, padx=5, pady=3)
+        self.status_label = tk.Label(status_frame, text="Live", font=("Arial", 14, "bold"), fg="red")
+        self.status_label.pack(side=tk.TOP, padx=5)
         
-        # Shot statistics label
+        # Right side: Shot statistics label (large font)
         stats_frame = tk.Frame(control_frame)
-        stats_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=0, padx=10)
-        tk.Label(stats_frame, text="Shots:", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        self.stats_label = tk.Label(stats_frame, text="0/0 (0%)", font=("Arial", 10, "bold"), fg="blue")
-        self.stats_label.pack(side=tk.LEFT, padx=5)
-
-        # Right side: Playback controls
-        right_frame = tk.LabelFrame(control_frame, text="Playback", padx=10, pady=5)
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=1, padx=5)
-
-        self.load_button = tk.Button(right_frame, text="Load File", command=self.load_playback_file,
-                                     bg="lightblue", width=12)
-        self.load_button.pack(side=tk.LEFT, padx=5)
-
-        self.play_button = tk.Button(right_frame, text="Play", command=self.play_playback,
-                                     bg="lightgreen", width=8, state=tk.DISABLED)
-        self.play_button.pack(side=tk.LEFT, padx=3)
-
-        self.pause_button = tk.Button(right_frame, text="Pause", command=self.pause_playback,
-                                      bg="lightyellow", width=8, state=tk.DISABLED)
-        self.pause_button.pack(side=tk.LEFT, padx=3)
-
-        self.stop_button = tk.Button(right_frame, text="Stop", command=self.stop_playback,
-                                     bg="lightcoral", width=8, state=tk.DISABLED)
-        self.stop_button.pack(side=tk.LEFT, padx=3)
-
-        self.restart_button = tk.Button(right_frame, text="Restart", command=self.restart_playback,
-                                        bg="lightgray", width=8, state=tk.DISABLED)
-        self.restart_button.pack(side=tk.LEFT, padx=3)
-
-        self.playback_file_label = tk.Label(right_frame, text="No file loaded", wraplength=200)
-        self.playback_file_label.pack(side=tk.LEFT, padx=5)
+        stats_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=0, padx=20, pady=5)
+        tk.Label(stats_frame, text="Shots:", font=("Arial", 12, "bold")).pack(side=tk.TOP, padx=5, pady=3)
+        self.stats_label = tk.Label(stats_frame, text="0/0 (0%)", font=("Arial", 28, "bold"), fg="blue")
+        self.stats_label.pack(side=tk.TOP, padx=5)
 
     def browse_log_path(self):
         """Open file dialog to select log file path."""
@@ -427,7 +432,12 @@ class SensorGui(tk.Tk):
             pct = self.shot_stats['percentage']
             self.stats_label.config(text=f"{makes}/{total} ({pct:.0f}%)")
             for shot in new_shots:
-                print(f"🏀 Shot: {shot['classification']} @ {shot['impact_time']:.3f}s (confidence: {shot['confidence']:.2f})")
+                impact_time = shot['impact_time'] if shot['impact_time'] is not None else shot['basket_time']
+                if shot['classification'] == 'MAKE':
+                    basket_type = shot.get('basket_type', 'Unknown')
+                    print(f"🏀 Shot: {shot['classification']} ({basket_type}) @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
+                else:
+                    print(f"🏀 Shot: {shot['classification']} @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
         
         # Add all samples to buffers
         for sample in samples:
@@ -528,6 +538,34 @@ class SensorGui(tk.Tk):
         self.ax_signal_rate.relim()
         self.ax_signal_rate.autoscale_view()
         self.ax_signal_rate.set_xlim(time_min, time_max)
+        
+        # Clear previous shot event lines from all axes
+        for line in self.ax_accel.get_lines()[4:]:  # Skip first 4 (data lines)
+            line.remove()
+        for line in self.ax_gyro.get_lines()[3:]:  # Skip first 3 (data lines)
+            line.remove()
+        for line in self.ax_range.get_lines()[1:]:  # Skip first (data line)
+            line.remove()
+        for line in self.ax_signal_rate.get_lines()[1:]:  # Skip first (data line)
+            line.remove()
+        
+        # Plot shot events on all 4 plots
+        all_shots = self.shot_classifier.get_all_shots()
+        for shot in all_shots:
+            if shot['classification'] == 'MAKE':
+                # Red vertical line at basket_time on all plots
+                basket_time = shot['basket_time']
+                self.ax_accel.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
+                self.ax_gyro.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
+                self.ax_range.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
+                self.ax_signal_rate.axvline(x=basket_time, color='red', linestyle='--', linewidth=2, alpha=0.7)
+            elif shot['classification'] == 'MISS':
+                # Blue vertical line at impact_time on all plots
+                impact_time = shot['impact_time']
+                self.ax_accel.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
+                self.ax_gyro.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
+                self.ax_range.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
+                self.ax_signal_rate.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
         
         self.canvas.draw_idle()
 
