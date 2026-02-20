@@ -194,8 +194,8 @@ class DataReceiver:
                             distance, tof_ts, signal_rate = tof_data[i]
                         else:
                             distance = 0xFFFE
-                            tof_ts = None
-                            signal_rate = None
+                            tof_ts = mpu_ts  # Use MPU timestamp as fallback
+                            signal_rate = 0  # Use 0 instead of None
                         batch.append({
                             'accel': accel,
                             'gyro': gyro,
