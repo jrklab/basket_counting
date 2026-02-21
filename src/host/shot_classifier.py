@@ -13,11 +13,12 @@ class ThresholdConfig:
     """Thresholds for shot detection. Tune these based on your hardware/environment."""
     
     # MPU Impact Detection
-    IMPACT_ACCEL_THRESHOLD = 3.0  # g-force, spike above baseline to trigger impact
+    IMPACT_ACCEL_THRESHOLD = 2.0  # g-force, spike above baseline to trigger impact
 
     # TOF Basket Detection
-    TOF_DISTANCE_THRESHOLD = 350  # mm, ball in basket when distance < this
-    TOF_SIGNAL_RATE_THRESHOLD = 1000  # signal rate, basketball has high SR
+    TOF_DISTANCE_THRESHOLD_HIGH = 350  # mm, ball in basket when distance < this
+    TOF_DISTANCE_THRESHOLD_LOW = 50   # mm, ball close to basket when distance < this (for bank shots)
+    TOF_SIGNAL_RATE_THRESHOLD = 500  # signal rate, basketball has high SR
 
     MAX_TIME_AFTER_IMPACT = 0.5  # seconds, max time to detect basket after impact
     BLACKOUT_WINDOW = 1.0  # seconds, if no basket by this time, classify as MISS
@@ -205,7 +206,8 @@ class ShotClassifier:
     
     def _is_basket_event(self, distance, signal_rate):
         """Check if TOF reading indicates basket."""
-        return (distance < self.config.TOF_DISTANCE_THRESHOLD and 
+        return (distance < self.config.TOF_DISTANCE_THRESHOLD_HIGH and 
+                distance > self.config.TOF_DISTANCE_THRESHOLD_LOW and
                 signal_rate > self.config.TOF_SIGNAL_RATE_THRESHOLD)
     
     def get_statistics(self):
