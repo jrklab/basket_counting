@@ -11,8 +11,9 @@ def main():
     gui = SensorGui()
     receiver = DataReceiver(gui)
     
-    # Pass camera manager to GUI
+    # Pass camera manager and receiver to GUI
     gui.camera_manager = receiver.camera
+    gui.receiver = receiver
     
     receiver.start()
     

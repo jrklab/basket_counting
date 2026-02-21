@@ -61,7 +61,7 @@ class DataReceiver:
         self.log_file = None
         self.csv_writer = None
         
-        # Initialize camera first (before _init_log_file)
+        # Initialize camera
         self.camera = CameraManager(
             camera_id=CAMERA_ID,
             fps=CAMERA_FPS,
@@ -69,18 +69,36 @@ class DataReceiver:
             jpeg_quality=CAMERA_JPEG_QUALITY
         )
         self.camera_frame_mapping = {}  # Map sample index to frame_id
-        
-        self._init_log_file()
+        self.last_frame_id = -1   # Track last frame ID to detect drops
+        self.last_frame_ts = None  # Timestamp of last known frame
+        # Log file is created on demand when recording starts (via _init_log_file)
         
         # Data queue for passing packets from receiver thread to processor thread
-        self.packet_queue = Queue(maxsize=100)
+        self.packet_queue = Queue(maxsize=300)  # Increased from 100 to handle 3 second bursts
         self.running = True
+        self.packets_processed = 0  # Counter for CSV flush logic
 
     def _init_log_file(self):
-        """Initialize or reinitialize the log file."""
+        """Initialize or reinitialize the log file. Called each time recording starts."""
         log_path = self.gui.log_file_path
         if self.log_file:
             self.log_file.close()
+        # Reset per-session counters
+        self.packets_processed = 0
+        self.last_frame_id = -1
+        self.last_frame_ts = None
+
+        # Drain any packets that arrived before recording started so the CSV
+        # only contains packets received after this session begins
+        drained = 0
+        while not self.packet_queue.empty():
+            try:
+                self.packet_queue.get_nowait()
+                drained += 1
+            except:
+                break
+        if drained:
+            print(f"ℹ️  Discarded {drained} pre-recording packets from queue")
         
         self.log_file = open(log_path, "w", newline="")
         self.csv_writer = csv.writer(self.log_file)
@@ -112,13 +130,15 @@ class DataReceiver:
         while self.running:
             try:
                 data, addr = self.sock.recvfrom(2048)
+                # Capture host receive timestamp immediately after recvfrom returns
+                host_ts_udp = time.time_ns() // 1_000_000  # ns → ms (epoch)
                 packets_received += 1
                 packets_since_last_print += 1
                 
                 try:
                     # Try to queue the packet without blocking
                     # If queue is full, drop the packet to prevent blocking
-                    self.packet_queue.put_nowait(data)
+                    self.packet_queue.put_nowait((data, host_ts_udp))
                 except:
                     packets_dropped += 1
                     if packets_dropped % 10 == 0:
@@ -147,10 +167,8 @@ class DataReceiver:
         while self.running:
             try:
                 # Get packet with timeout to check running flag periodically
-                data = self.packet_queue.get(timeout=0.1)
-                
-                # Record host timestamp when UDP packet is processed
-                host_ts_udp = time.time_ns() // 1_000_000  # ns → ms
+                data, host_ts_udp = self.packet_queue.get(timeout=0.1)
+                # host_ts_udp was captured at receive time in receive_data()
                 
                 # Parse the packet
                 packet_timestamp = struct.unpack('!I', data[0:4])[0]
@@ -187,14 +205,20 @@ class DataReceiver:
                         sample_timestamp = packet_timestamp - timestamp_delta
                         tof_data.append((distance, sample_timestamp, signal_rate))
                 
-                # Save any new camera frames and get metadata
+                # Get camera frame metadata (frame saving is async in camera thread)
                 frame_id = -1
                 host_ts_frame = None
                 if self.camera.is_available and self.gui.recording:
-                    fid, ts = self.camera.save_frame_if_new()
-                    if fid is not None:
-                        frame_id = fid
-                        host_ts_frame = ts
+                    # Just get the latest frame metadata without blocking on I/O
+                    fid, ts = self.camera.get_latest_saved_frame()
+                    if fid is not None and fid != self.last_frame_id:
+                        # New frame available — update tracking
+                        self.last_frame_id = fid
+                        self.last_frame_ts = ts
+                    # Always use the most recently known frame (avoids -1 on every other packet)
+                    if self.last_frame_id >= 0:
+                        frame_id = self.last_frame_id
+                        host_ts_frame = self.last_frame_ts
                 
                 # Log all MPU samples with available TOF data and camera metadata
                 if self.gui.recording:
@@ -217,12 +241,13 @@ class DataReceiver:
                             host_ts_udp, host_ts_frame_logged, frame_id_logged
                         ])
                     
-                    # Flush CSV file periodically
-                    if packet_timestamp % 10 == 0:
+                    # Flush CSV file more frequently to ensure data is written
+                    self.packets_processed += 1
+                    if self.packets_processed % 5 == 0:  # Flush every 5 packets (~500ms at 10 Hz)
                         self.log_file.flush()
                 
-                print(f"Received packet: {num_mpu_samples} MPU samples, {num_tof_samples} TOF samples")
-                print(f">>> TOF Range values (mm): {[d for d, _, _ in tof_data]}")
+                # print(f"Received packet: {num_mpu_samples} MPU samples, {num_tof_samples} TOF samples")
+                # print(f">>> TOF Range values (mm): {[d for d, _, _ in tof_data]}")
                 
                 # Update GUI with all MPU samples paired with TOF data (thread-safe via after())
                 if not self.gui.playback_mode:

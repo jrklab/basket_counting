@@ -13,9 +13,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import time
 import os
 import csv
+import bisect
+import datetime
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
+from datetime import datetime
 
 from config import PLOT_HISTORY_SIZE, PLOT_DISPLAY_WINDOW, LOG_FILE, SAMPLES_PER_PACKET
 from shot_classifier import ShotClassifier
@@ -49,6 +52,7 @@ class SensorGui(tk.Tk):
         # Throttle plot updates to 10 FPS (100ms min interval)
         self.last_plot_update_time = 0
         self.min_plot_update_interval = 0.1  # seconds
+        self.pending_samples = []  # Buffer samples that arrive between plot updates
 
         # Recording state
         self.recording = False
@@ -72,6 +76,8 @@ class SensorGui(tk.Tk):
         self.current_camera_image = None
         self.camera_label = None
         self.playback_frames_dir = None  # Set when loading playback file
+        self.playback_frame_index = []   # List of (ts_ms, filename), sorted by ts_ms
+        self.playback_frame_ts = []      # Parallel list of timestamps for bisect
 
         self.create_control_panel()
         self.create_main_layout()
@@ -158,6 +164,18 @@ class SensorGui(tk.Tk):
 
     def start_recording(self):
         """Enable recording of incoming data."""
+        # Generate a new timestamped filename for each session
+        ts = datetime.now().strftime("%Y%m%d%H%M")
+        base_dir = os.path.dirname(self.log_file_path) or "."
+        self.log_file_path = os.path.join(base_dir, f"{ts}_sensor_data.csv")
+        self.log_path_label.config(text=f"Path: {os.path.basename(self.log_file_path)}")
+
+        # Reinitialize the CSV file and camera recording directory
+        if hasattr(self, 'receiver') and self.receiver:
+            self.receiver.last_frame_id = -1
+            self.receiver.packets_processed = 0
+            self.receiver._init_log_file()
+
         self.recording = True
         self.shot_classifier.reset()
         self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
@@ -169,6 +187,9 @@ class SensorGui(tk.Tk):
     def stop_recording(self):
         """Disable recording of incoming data."""
         self.recording = False
+        # Request data receiver to flush CSV file
+        if hasattr(self, 'receiver') and self.receiver and self.receiver.log_file:
+            self.receiver.log_file.flush()
         self.record_button.config(state=tk.NORMAL)
         self.stop_record_button.config(state=tk.DISABLED)
         print("Recording stopped.")
@@ -182,13 +203,28 @@ class SensorGui(tk.Tk):
             try:
                 self.playback_data = []
                 self.playback_frames_dir = None
+                self.playback_frame_index = []
+                self.playback_frame_ts = []
                 
                 # Check if frames directory exists (new format with camera)
                 base_dir = os.path.dirname(file_path)
                 frames_dir = os.path.join(base_dir, "frames")
                 if os.path.exists(frames_dir):
                     self.playback_frames_dir = frames_dir
-                    print(f"✓ Found camera frames in: {frames_dir}")
+                    # Build sorted index of (ts_ms, filename) from frame filenames
+                    frame_entries = []
+                    for fname in os.listdir(frames_dir):
+                        # Expected format: frame_NNNNNN_<timestamp>ms.jpg
+                        if fname.startswith('frame_') and fname.endswith('ms.jpg'):
+                            try:
+                                ts_str = fname.rsplit('_', 1)[1].replace('ms.jpg', '')
+                                frame_entries.append((int(ts_str), fname))
+                            except (ValueError, IndexError):
+                                continue
+                    frame_entries.sort()
+                    self.playback_frame_index = frame_entries
+                    self.playback_frame_ts = [e[0] for e in frame_entries]
+                    print(f"✓ Found camera frames in: {frames_dir} ({len(frame_entries)} frames indexed by timestamp)")
                 
                 with open(file_path, 'r') as f:
                     csv_reader = csv.reader(f)
@@ -202,6 +238,7 @@ class SensorGui(tk.Tk):
                                 tof_ts = int(row[7])
                                 distance = int(row[8])
                                 signal_rate = int(row[9]) if len(row) > 9 else 0
+                                host_ts_udp = int(row[10]) if len(row) > 10 else -1
                                 frame_id = int(row[12]) if len(row) > 12 else -1
                                 
                                 # Handle TOF data validation
@@ -215,7 +252,8 @@ class SensorGui(tk.Tk):
                                     'tof_ts': tof_ts,
                                     'distance': distance,
                                     'signal_rate': signal_rate,
-                                    'frame_id': frame_id
+                                    'frame_id': frame_id,
+                                    'host_ts_udp': host_ts_udp
                                 })
                             except (ValueError, IndexError):
                                 continue
@@ -289,6 +327,7 @@ class SensorGui(tk.Tk):
         """Called when playback finishes."""
         self.playback_mode = False
         self.playback_running = False
+        self.canvas.draw_idle()
         self.play_button.config(state=tk.NORMAL)
         self.pause_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.DISABLED)
@@ -431,8 +470,20 @@ class SensorGui(tk.Tk):
         Args:
             samples: List of dicts with 'accel', 'gyro', 'distance', 'mpu_ts', 'tof_ts', 'signal_rate', 'frame_id'
         """
+        # Buffer samples that arrive between plot updates (don't drop them!)
+        self.pending_samples.extend(samples)
+        
+        # Check if it's time to update the plot
+        current_time = time.time()
+        if current_time - self.last_plot_update_time < self.min_plot_update_interval:
+            return  # Not time yet, samples are buffered in self.pending_samples
+        
+        # Time to plot! Process all pending samples
+        self.last_plot_update_time = current_time
+        samples_to_process = self.pending_samples
+        self.pending_samples = []  # Clear buffer
         # Process batch through shot classifier
-        new_shots = self.shot_classifier.process_batch(samples)
+        new_shots = self.shot_classifier.process_batch(samples_to_process)
         
         # Update statistics
         if new_shots:
@@ -456,21 +507,39 @@ class SensorGui(tk.Tk):
             if frame is not None:
                 self._display_camera_frame(frame)
         
+        # Update date/time suptitle above plots (live and playback)
+        if self.playback_mode and samples_to_process:
+            # Use host UDP timestamp from the most recent sample
+            for s in reversed(samples_to_process):
+                host_ts = s.get('host_ts_udp', -1)
+                if host_ts > 0:
+                    dt = datetime.fromtimestamp(host_ts / 1000)
+                    self.fig.suptitle(dt.strftime('%Y-%m-%d  %H:%M:%S'),
+                                      fontsize=10, fontweight='bold', y=1.0)
+                    break
+        else:
+            # Live mode: use current wall-clock time
+            self.fig.suptitle(datetime.now().strftime('%Y-%m-%d  %H:%M:%S'),
+                              fontsize=10, fontweight='bold', y=1.0)
+
         # Handle camera frame display (for playback mode)
-        if self.playback_mode and self.playback_frames_dir and len(samples) > 0:
-            for sample in samples:
-                frame_id = sample.get('frame_id', -1)
-                if frame_id >= 0:
-                    # Load and display frame from disk
-                    frame_path = os.path.join(self.playback_frames_dir, f"frame_{frame_id:06d}.jpg")
-                    if os.path.exists(frame_path):
-                        frame = cv2.imread(frame_path)
-                        if frame is not None:
-                            self._display_camera_frame(frame)
+        if self.playback_mode and self.playback_frames_dir and self.playback_frame_index and len(samples_to_process) > 0:
+            for sample in samples_to_process:
+                host_ts = sample.get('host_ts_udp', -1)
+                if host_ts > 0:
+                    # Pick the last frame whose timestamp does not exceed host_ts
+                    idx = bisect.bisect_right(self.playback_frame_ts, host_ts) - 1
+                    if idx >= 0:
+                        _, fname = self.playback_frame_index[idx]
+                        frame_path = os.path.join(self.playback_frames_dir, fname)
+                        if os.path.exists(frame_path):
+                            frame = cv2.imread(frame_path)
+                            if frame is not None:
+                                self._display_camera_frame(frame)
                     break
         
         # Add all samples to buffers
-        for sample in samples:
+        for sample in samples_to_process:
             timestamp = sample['mpu_ts']
             accel = sample['accel']
             gyro = sample['gyro']
