@@ -188,7 +188,7 @@ class CameraManager:
         with self.frame_lock:
             return self.current_frame, self.current_frame_id, self.current_frame_ts
     
-    def prepare_recording(self, base_dir="recordings"):
+    def prepare_recording(self, base_dir="recordings", session_name=""):
         """Prepare directory structure for recording frames."""
         if not self.is_available:
             return None
@@ -196,8 +196,9 @@ class CameraManager:
         # Reset per-session frame log
         self.frame_ids_logged = []
         
-        # Create frames directory
-        self.frames_dir = os.path.join(base_dir, "frames")
+        # Create frames directory named after the session (matches CSV timestamp prefix)
+        dir_name = f"{session_name}_frames" if session_name else "frames"
+        self.frames_dir = os.path.join(base_dir, dir_name)
         os.makedirs(self.frames_dir, exist_ok=True)
         
         # Clear any existing frames

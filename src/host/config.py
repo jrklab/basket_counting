@@ -22,7 +22,7 @@ ACCEL_SENSITIVITY = 2048.0  # LSB/g for ±16g range
 GYRO_SENSITIVITY = 16.384   # LSB/°/s for ±2000°/s range
 
 # --- Camera Configuration ---
-CAMERA_ID = 2               # USB camera index (0 for default)
+CAMERA_ID = 2               # USB camera index (0 for default), 0: laptop camera, 2: external webcam
 CAMERA_FPS = 10             # Target frames per second
 CAMERA_RESOLUTION = (640, 480)  # (width, height)
 CAMERA_JPEG_QUALITY = 95    # JPEG compression quality (0-100)

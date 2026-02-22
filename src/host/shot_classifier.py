@@ -20,8 +20,8 @@ class ThresholdConfig:
     TOF_DISTANCE_THRESHOLD_LOW = 50   # mm, ball close to basket when distance < this (for bank shots)
     TOF_SIGNAL_RATE_THRESHOLD = 500  # signal rate, basketball has high SR
 
-    MAX_TIME_AFTER_IMPACT = 0.5  # seconds, max time to detect basket after impact
-    BLACKOUT_WINDOW = 1.0  # seconds, if no basket by this time, classify as MISS
+    MAX_TIME_AFTER_IMPACT = 1.0  # seconds, max time to detect basket after impact
+    BLACKOUT_WINDOW = 2.0  # seconds, if no basket by this time, classify as MISS
 
 class ShotEvent:
     """Represents a detected event (impact or basket)."""

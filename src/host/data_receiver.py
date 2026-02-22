@@ -113,7 +113,10 @@ class DataReceiver:
         # Prepare camera recording directory
         if self.camera.is_available:
             recording_dir = os.path.dirname(log_path) or "."
-            self.camera.prepare_recording(recording_dir)
+            # Derive session name from CSV filename: e.g. "202602211411" from "202602211411_sensor_data.csv"
+            csv_basename = os.path.basename(log_path)
+            session_name = csv_basename.split('_')[0] if '_' in csv_basename else ""
+            self.camera.prepare_recording(recording_dir, session_name=session_name)
 
     def receive_data(self):
         """

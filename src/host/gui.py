@@ -14,6 +14,7 @@ import time
 import os
 import csv
 import bisect
+import subprocess
 import datetime
 import cv2
 import numpy as np
@@ -151,6 +152,15 @@ class SensorGui(tk.Tk):
         tk.Label(stats_frame, text="Shots:", font=("Arial", 12, "bold")).pack(side=tk.TOP, padx=5, pady=3)
         self.stats_label = tk.Label(stats_frame, text="0/0 (0%)", font=("Arial", 28, "bold"), fg="blue")
         self.stats_label.pack(side=tk.TOP, padx=5)
+        tk.Button(stats_frame, text="Clear Score", command=self.clear_score,
+                  bg="lightyellow", width=12).pack(side=tk.TOP, padx=5, pady=3)
+
+    def clear_score(self):
+        """Reset shot statistics and classifier state without stopping recording or playback."""
+        self.shot_classifier.reset()
+        self.shot_stats = {'makes': 0, 'misses': 0, 'total': 0, 'percentage': 0.0}
+        self.stats_label.config(text="0/0 (0%)")
+        print("Score cleared.")
 
     def browse_log_path(self):
         """Open file dialog to select log file path."""
@@ -208,12 +218,20 @@ class SensorGui(tk.Tk):
                 
                 # Check if frames directory exists (new format with camera)
                 base_dir = os.path.dirname(file_path)
-                frames_dir = os.path.join(base_dir, "frames")
-                if os.path.exists(frames_dir):
-                    self.playback_frames_dir = frames_dir
-                    # Build sorted index of (ts_ms, filename) from frame filenames
+                csv_basename = os.path.basename(file_path)
+                session_name = csv_basename.split('_')[0] if '_' in csv_basename else ""
+                # Prefer timestamped frames dir (e.g. 202602211411_frames), fall back to generic "frames"
+                candidates = []
+                if session_name:
+                    candidates.append(os.path.join(base_dir, f"{session_name}_frames"))
+                candidates.append(os.path.join(base_dir, "frames"))
+                for candidate in candidates:
+                    if os.path.exists(candidate):
+                        self.playback_frames_dir = candidate
+                        break
+                if self.playback_frames_dir:
                     frame_entries = []
-                    for fname in os.listdir(frames_dir):
+                    for fname in os.listdir(self.playback_frames_dir):
                         # Expected format: frame_NNNNNN_<timestamp>ms.jpg
                         if fname.startswith('frame_') and fname.endswith('ms.jpg'):
                             try:
@@ -224,7 +242,7 @@ class SensorGui(tk.Tk):
                     frame_entries.sort()
                     self.playback_frame_index = frame_entries
                     self.playback_frame_ts = [e[0] for e in frame_entries]
-                    print(f"✓ Found camera frames in: {frames_dir} ({len(frame_entries)} frames indexed by timestamp)")
+                    print(f"✓ Found camera frames in: {self.playback_frames_dir} ({len(frame_entries)} frames indexed by timestamp)")
                 
                 with open(file_path, 'r') as f:
                     csv_reader = csv.reader(f)
@@ -494,11 +512,17 @@ class SensorGui(tk.Tk):
             self.stats_label.config(text=f"{makes}/{total} ({pct:.0f}%)")
             for shot in new_shots:
                 impact_time = shot['impact_time'] if shot['impact_time'] is not None else shot['basket_time']
+                score_text = f"{makes} out of {total}"
                 if shot['classification'] == 'MAKE':
                     basket_type = shot.get('basket_type', 'Unknown')
                     print(f"🏀 Shot: {shot['classification']} ({basket_type}) @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
+                    if basket_type == 'SWISH':
+                        self._speak(f'Great Swish. {score_text}')
+                    else:
+                        self._speak(f'Made. {score_text}')
                 else:
                     print(f"🏀 Shot: {shot['classification']} @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
+                    self._speak(f'Miss. {score_text}')
         
         # Handle camera frame display (for live mode)
         if not self.playback_mode and self.camera_manager and self.camera_manager.is_available:
@@ -662,6 +686,15 @@ class SensorGui(tk.Tk):
                 self.ax_signal_rate.axvline(x=impact_time, color='blue', linestyle='--', linewidth=2, alpha=0.7)
         
         self.canvas.draw_idle()    
+    def _speak(self, text):
+        """Speak text asynchronously using spd-say (non-blocking)."""
+        try:
+            subprocess.Popen(['spd-say', text],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except Exception:
+            pass  # Audio not critical; silently ignore if spd-say unavailable
+
     def _display_camera_frame(self, frame):
         """Display a camera frame in the camera label."""
         if frame is None or self.camera_label is None:
