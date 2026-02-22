@@ -517,7 +517,7 @@ class SensorGui(tk.Tk):
                     basket_type = shot.get('basket_type', 'Unknown')
                     print(f"🏀 Shot: {shot['classification']} ({basket_type}) @ {impact_time:.3f}s (confidence: {shot['confidence']:.2f})")
                     if basket_type == 'SWISH':
-                        self._speak(f'Great Swish. {score_text}')
+                        self._speak(f'Swish. {score_text}')
                     else:
                         self._speak(f'Made. {score_text}')
                 else:
