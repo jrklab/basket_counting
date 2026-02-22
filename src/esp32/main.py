@@ -71,8 +71,11 @@ tof_measurement_period = 1000.0/VL53L1X_READ_FREQUENCY_HZ  # ms (for 40Hz operat
 # VL53L1X timeout tracking
 tof_last_data_ready_time = time.ticks_ms()
 
-# Pre-allocate packet buffer (334 bytes) to avoid memory fragmentation
-packet_buffer = bytearray(334)
+# Pre-allocate packet buffer (336 bytes) to avoid memory fragmentation
+packet_buffer = bytearray(336)
+
+# Sequence ID counter (uint16, wraps 0-65535)
+seq_id = 0
 
 def check_wifi():
     """Check if WiFi is already connected (connection should be done in boot.py)."""
@@ -183,17 +186,19 @@ def pack_and_send_udp_packet(udp_socket):
     
     Packet format (FIXED SIZE):
     - Packet timestamp (4 bytes, uint32)
+    - Sequence ID      (2 bytes, uint16, wraps 0-65535)
     - Number of MPU samples (1 byte, uint8) - typically 20
     - MPU samples (20 slots): 
-      - Sample timestamp delta (2 bytes, uint16, delta = packet_timestamp - sample_timestamp) + AcX, AcY, AcZ, GyX, GyY, GyZ (6 × int16 = 12 bytes) = 14 bytes per slot
+      - Sample timestamp delta (2 bytes, uint16) + AcX, AcY, AcZ, GyX, GyY, GyZ (6 × int16 = 12 bytes) = 14 bytes per slot
       - 20 slots × 14 bytes = 280 bytes
     - Number of TOF samples (1 byte, uint8) - up to 8
     - TOF samples (8 slots):
-      - Sample timestamp delta (2 bytes, uint16) + distance_mm (uint16 = 2 bytes) + signal_rate (uint16 = 2 bytes) = 6 bytes per slot
-      - 8 slots × 6 bytes = 48 bytes, unfilled slots have timestamp_delta=0 and distance=0 and signal_rate=0
+      - Sample timestamp delta (2 bytes, uint16) + distance_mm (uint16) + signal_rate (uint16) = 6 bytes per slot
+      - 8 slots × 6 bytes = 48 bytes
     
-    Total packet size: 4 + 1 + 280 + 1 + 48 = 334 bytes (fixed)
+    Total packet size: 4 + 2 + 1 + 280 + 1 + 48 = 336 bytes (fixed)
     """
+    global seq_id
     if len(mpu_data_buffer) >= SAMPLES_PER_PACKET_MPU:
         # Extract all available TOF data
         mpu_data_to_send = mpu_data_buffer[:SAMPLES_PER_PACKET_MPU]
@@ -210,7 +215,12 @@ def pack_and_send_udp_packet(udp_socket):
         offset = 0
         struct.pack_into('!I', packet_buffer, offset, packet_timestamp)
         offset += 4
-        
+
+        # Pack sequence ID and advance counter
+        struct.pack_into('!H', packet_buffer, offset, seq_id)
+        offset += 2
+        seq_id = (seq_id + 1) & 0xFFFF  # wrap at 65535
+
         # Add MPU sample count
         num_mpu_samples = len(mpu_data_to_send)
         struct.pack_into('!B', packet_buffer, offset, num_mpu_samples)
@@ -260,7 +270,7 @@ def pack_and_send_udp_packet(udp_socket):
         # Send packet
         try:
             udp_socket.sendto(packet_buffer, (SERVER_IP, SERVER_PORT))
-            print(f"[{packet_timestamp:>10}] Sent packet: {num_mpu_samples} MPU + {num_tof_samples} TOF samples (size: 334 bytes)")
+            print(f"[{packet_timestamp:>10}] seq={seq_id-1 if seq_id > 0 else 65535} Sent: {num_mpu_samples} MPU + {num_tof_samples} TOF (336 bytes)")
         except Exception as e:
             print(f"Error sending UDP packet: {e}")
         

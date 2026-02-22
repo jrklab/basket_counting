@@ -77,6 +77,7 @@ class DataReceiver:
         self.packet_queue = Queue(maxsize=300)  # Increased from 100 to handle 3 second bursts
         self.running = True
         self.packets_processed = 0  # Counter for CSV flush logic
+        self.last_seq_id = -1       # Sequence ID tracking (-1 = not yet received)
 
     def _init_log_file(self):
         """Initialize or reinitialize the log file. Called each time recording starts."""
@@ -87,6 +88,7 @@ class DataReceiver:
         self.packets_processed = 0
         self.last_frame_id = -1
         self.last_frame_ts = None
+        self.last_seq_id = -1  # Reset sequence tracking for new session
 
         # Drain any packets that arrived before recording started so the CSV
         # only contains packets received after this session begins
@@ -175,12 +177,25 @@ class DataReceiver:
                 
                 # Parse the packet
                 packet_timestamp = struct.unpack('!I', data[0:4])[0]
-                num_mpu_samples = struct.unpack('!B', data[4:5])[0]
-                
+                seq_id           = struct.unpack('!H', data[4:6])[0]
+                num_mpu_samples  = struct.unpack('!B', data[6:7])[0]
+
+                # Sequence ID check
+                if self.last_seq_id >= 0:
+                    expected = (self.last_seq_id + 1) & 0xFFFF
+                    if seq_id < self.last_seq_id and not (self.last_seq_id > 60000 and seq_id < 5000):
+                        # Seq ID went backwards (not a wrap-around) — stale/duplicate packet
+                        print(f"⚠️  Discarding stale packet: seq={seq_id}, last={self.last_seq_id}")
+                        continue
+                    gap = (seq_id - self.last_seq_id) & 0xFFFF
+                    if gap > 1:
+                        print(f"⚠️  Packet loss detected: {gap - 1} packet(s) lost (seq {self.last_seq_id} → {seq_id})")
+                self.last_seq_id = seq_id
+
                 # Parse MPU6050 data with timestamp deltas
                 mpu_sensor_data = []
                 for i in range(num_mpu_samples):
-                    offset = 5 + i * 14
+                    offset = 7 + i * 14
                     timestamp_delta = struct.unpack('!H', data[offset:offset+2])[0]
                     sample = struct.unpack('!hhhhhh', data[offset+2:offset+14])
                     
@@ -194,7 +209,7 @@ class DataReceiver:
                     mpu_sensor_data.append((accel, gyro, sample_timestamp))
                 
                 # Parse VL53L1X data with timestamp deltas
-                tof_offset = 5 + num_mpu_samples * 14
+                tof_offset = 7 + num_mpu_samples * 14
                 num_tof_samples = struct.unpack('!B', data[tof_offset:tof_offset+1])[0]
                 tof_data = []
                 for i in range(8):  # Always 8 slots in fixed packet
